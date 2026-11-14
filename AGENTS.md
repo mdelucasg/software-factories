@@ -17,3 +17,11 @@ Do these checks in this order before you report a change to `app/` as complete:
 ### Issue tracker
 
 Issues and PRDs live as GitHub issues on your own copy of this repo (the `origin` remote), never on `ai-hero-dev/cohort-005-project`, managed with the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+## Terminal formatting
+
+When referencing local source files in responses:
+
+- Use plain workspace-relative file paths with line numbers (for example, app/routes/redeem.$code.tsx:80).
+- Never generate Markdown hyperlinks, `file://` URIs, or OSC 8 links for local files.
+- Do not wrap file paths in backticks, keeping paths directly clickable via VS Code's native terminal file detection.

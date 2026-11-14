@@ -77,7 +77,7 @@ function redeemCoupon(
     return {
       ok: false,
       error:
-        "This coupon can only be redeemed from the same country as the purchaser",
+        "This coupon can only be redeemed from the same country as the buyer",
     };
   }
 
@@ -238,8 +238,8 @@ export default function Redeem({
                 </span>
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
-                Someone has already claimed this seat. Please ask the person who
-                shared this link for a new coupon.
+                Someone has already redeemed this coupon. Please ask the person
+                who shared this link for a new coupon.
               </p>
             </div>
           ) : alreadyEnrolled ? (
@@ -268,8 +268,8 @@ export default function Redeem({
               </div>
               <p className="mt-2 text-sm text-muted-foreground">
                 This coupon can only be redeemed from the same country as the
-                person who purchased it. Your location doesn&apos;t match the
-                purchaser&apos;s country.
+                buyer. Your location doesn&apos;t match the buyer&apos;s
+                country.
               </p>
             </div>
           ) : (
