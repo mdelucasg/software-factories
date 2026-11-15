@@ -1,9 +1,11 @@
-import { useState } from "react";
-import { Link } from "react-router";
+import { useEffect, useState } from "react";
+import { Link, useFetcher } from "react-router";
+import { toast } from "sonner";
 import type { Route } from "./+types/team";
 import { getCurrentUserId } from "~/lib/session";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
+import { Textarea } from "~/components/ui/textarea";
 import { Users, BookOpen, Copy, Check, AlertTriangle } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { db } from "~/db";
@@ -14,8 +16,15 @@ import {
   courses,
   users,
   TeamMemberRole,
+  RefundStatus,
 } from "~/db/schema";
 import { eq, and } from "drizzle-orm";
+import {
+  getSeatAvailability,
+  listTeamLicences,
+  type SeatAvailability,
+} from "~/lib/refunds.server";
+import { formatPrice } from "~/lib/utils";
 
 function getTeamForAdmin(userId: number) {
   const membership = db
@@ -51,7 +60,7 @@ interface CourseStats {
   courseTitle: string;
   courseSlug: string;
   totalSeats: number;
-  redeemedSeats: number;
+  claimedSeats: number;
 }
 
 interface CouponRow {
@@ -60,6 +69,7 @@ interface CouponRow {
   courseId: number;
   courseTitle: string;
   redeemedByEmail: string | null;
+  availability: SeatAvailability;
   createdAt: string;
 }
 
@@ -95,11 +105,14 @@ export async function loader({ request }: Route.LoaderArgs) {
       courseTitle: string;
       courseSlug: string;
       total: number;
-      redeemed: number;
+      claimed: number;
     }
   >();
 
   for (const coupon of allCoupons) {
+    // A refunded Team Licence's Unclaimed Seats can never be claimed, so
+    // they no longer count towards the team's seats.
+    if (coupon.refundedAt !== null) continue;
     if (!courseMap.has(coupon.courseId)) {
       const course = getCourseById(coupon.courseId);
       courseMap.set(coupon.courseId, {
@@ -107,15 +120,13 @@ export async function loader({ request }: Route.LoaderArgs) {
         courseTitle: course?.title ?? "Unknown Course",
         courseSlug: course?.slug ?? "",
         total: 0,
-        redeemed: 0,
+        claimed: 0,
       });
     }
-    const entry = courseMap.get(coupon.courseId);
-    if (entry) {
-      entry.total++;
-      if (coupon.redeemedByUserId !== null) {
-        entry.redeemed++;
-      }
+    const entry = courseMap.get(coupon.courseId)!;
+    entry.total++;
+    if (coupon.redeemedByUserId !== null) {
+      entry.claimed++;
     }
   }
 
@@ -125,7 +136,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       courseTitle: e.courseTitle,
       courseSlug: e.courseSlug,
       totalSeats: e.total,
-      redeemedSeats: e.redeemed,
+      claimedSeats: e.claimed,
     })
   );
 
@@ -143,11 +154,14 @@ export async function loader({ request }: Route.LoaderArgs) {
       courseId: coupon.courseId,
       courseTitle: course?.title ?? "Unknown Course",
       redeemedByEmail,
+      availability: getSeatAvailability(db, coupon),
       createdAt: coupon.createdAt,
     };
   });
 
-  return { courseStats, couponRows };
+  const teamLicences = listTeamLicences(db, currentUserId, new Date());
+
+  return { courseStats, couponRows, teamLicences };
 }
 
 function CopyButton({ code }: { code: string }) {
@@ -183,7 +197,7 @@ function CopyButton({ code }: { code: string }) {
 }
 
 export default function Team({ loaderData }: Route.ComponentProps) {
-  const { courseStats, couponRows } = loaderData;
+  const { courseStats, couponRows, teamLicences } = loaderData;
   const [courseFilter, setCourseFilter] = useState<number | "all">("all");
 
   const filteredCoupons =
@@ -223,14 +237,14 @@ export default function Team({ loaderData }: Route.ComponentProps) {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-2xl font-bold">
-                      {stat.redeemedSeats}
+                      {stat.claimedSeats}
                       <span className="text-base font-normal text-muted-foreground">
                         {" "}
                         / {stat.totalSeats}
                       </span>
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      seats redeemed
+                      seats claimed
                     </p>
                   </div>
                   <Link to={`/courses/${stat.courseSlug}/purchase?mode=team`}>
@@ -242,6 +256,17 @@ export default function Team({ loaderData }: Route.ComponentProps) {
               </CardContent>
             </Card>
           ))}
+        </div>
+      )}
+
+      {teamLicences.length > 0 && (
+        <div className="mb-8">
+          <h2 className="mb-4 text-lg font-semibold">Team Licences</h2>
+          <div className="space-y-3">
+            {teamLicences.map((licence) => (
+              <TeamLicenceRow key={licence.purchaseId} licence={licence} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -296,16 +321,22 @@ export default function Team({ loaderData }: Route.ComponentProps) {
                     <td className="px-4 py-3">
                       {coupon.redeemedByEmail ? (
                         <span className="text-muted-foreground">
-                          Redeemed by {coupon.redeemedByEmail}
+                          Claimed by {coupon.redeemedByEmail}
+                        </span>
+                      ) : coupon.availability === "refunded" ? (
+                        <span className="text-muted-foreground">Refunded</span>
+                      ) : coupon.availability === "on_hold" ? (
+                        <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+                          On hold
                         </span>
                       ) : (
                         <span className="inline-flex items-center rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                          Unredeemed
+                          Unclaimed
                         </span>
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {!coupon.redeemedByEmail && (
+                      {coupon.availability === "available" && (
                         <CopyButton code={coupon.code} />
                       )}
                     </td>
@@ -317,6 +348,102 @@ export default function Team({ loaderData }: Route.ComponentProps) {
         )}
       </div>
     </div>
+  );
+}
+
+type TeamLicence = Route.ComponentProps["loaderData"]["teamLicences"][number];
+
+function TeamLicenceRow({ licence }: { licence: TeamLicence }) {
+  const fetcher = useFetcher<{ errors?: Record<string, string> }>();
+  const [isFormOpen, setIsFormOpen] = useState(false);
+  const isSubmitting = fetcher.state !== "idle";
+  const refundRequest = licence.latestRefundRequest;
+
+  useEffect(() => {
+    const firstError = Object.values(fetcher.data?.errors ?? {})[0];
+    if (fetcher.state === "idle" && firstError) {
+      toast.error(firstError);
+    }
+  }, [fetcher.state, fetcher.data]);
+
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="font-medium">{licence.courseTitle}</p>
+            <p className="text-sm text-muted-foreground">
+              {licence.seatCount} seats · {licence.claimedSeatCount} claimed ·{" "}
+              {formatPrice(licence.amountPaid)} · bought{" "}
+              {new Date(licence.purchasedAt).toLocaleDateString()}
+            </p>
+          </div>
+          {refundRequest?.status === RefundStatus.Open && (
+            <span className="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">
+              Refund requested — seats on hold
+            </span>
+          )}
+          {refundRequest?.status === RefundStatus.Approved && (
+            <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+              Refunded
+            </span>
+          )}
+          {licence.canRequestRefund && !isFormOpen && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-muted-foreground"
+              onClick={() => setIsFormOpen(true)}
+            >
+              Request a refund
+            </Button>
+          )}
+        </div>
+
+        {refundRequest?.status === RefundStatus.Declined && refundRequest.decisionNote && (
+          <p className="mt-3 rounded-md bg-muted p-2 text-sm">
+            <span className="font-medium">Refund declined: </span>
+            {refundRequest.decisionNote}
+          </p>
+        )}
+
+        {licence.canRequestRefund && isFormOpen && (
+          <fetcher.Form
+            method="post"
+            action={`/courses/${licence.courseSlug}/refund`}
+            className="mt-4 space-y-2"
+          >
+            <p className="text-xs text-muted-foreground">
+              We will send {formatPrice(licence.amountPaid)} back once someone
+              has read your note. Until then, none of this licence&apos;s seats
+              can be claimed. You can ask until{" "}
+              {/* A calendar day, so read it as local midnight, not UTC. */}
+              {new Date(`${licence.lastDayInWindow}T00:00`).toLocaleDateString()}.
+            </p>
+            <input type="hidden" name="purchaseId" value={licence.purchaseId} />
+            <Textarea
+              name="reason"
+              rows={3}
+              required
+              placeholder="What went wrong?"
+            />
+            <div className="flex gap-2">
+              <Button type="submit" size="sm" disabled={isSubmitting}>
+                {isSubmitting ? "Sending..." : "Request a refund"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsFormOpen(false)}
+              >
+                Keep it
+              </Button>
+            </div>
+          </fetcher.Form>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
