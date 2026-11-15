@@ -1,7 +1,7 @@
 import { Outlet } from "react-router";
 import type { Route } from "./+types/layout.app";
-import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
+import { NotificationPrototypeShell } from "~/components/notification-tray.prototype";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
@@ -228,15 +228,14 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
   } = loaderData;
 
   return (
-    <div className="flex h-screen overflow-hidden">
-      <Sidebar
+    <>
+      <NotificationPrototypeShell
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
-      />
-      <main className="flex-1 overflow-y-auto">
+      >
         <Outlet />
-      </main>
+      </NotificationPrototypeShell>
       <DevUI
         users={users}
         currentUser={currentUser}
@@ -245,6 +244,6 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         countries={countries}
       />
       <Toaster position="bottom-right" richColors closeButton />
-    </div>
+    </>
   );
 }
