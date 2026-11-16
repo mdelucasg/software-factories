@@ -301,42 +301,56 @@ export class KnockNotificationAdapter implements NotificationProviderAdapter {
   }
 
   async identifyUser(user: NotificationRecipient): Promise<void> {
-    await this.client.users.update(user.id, {
-      name: user.name,
-      email: user.email,
-    });
+    try {
+      await this.client.users.update(user.id, {
+        name: user.name,
+        email: user.email,
+      });
+    } catch (error) {
+      console.warn(
+        `[notifications] Knock identifyUser failed for user "${user.id}":`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   async triggerWorkflow(input: NotificationTriggerInput): Promise<void> {
-    await this.client.workflows.trigger(
-      input.workflow,
-      {
-        recipients: input.recipients.map((r) => ({
-          id: r.id,
-          name: r.name,
-          email: r.email,
-        })),
-        ...(input.actor
-          ? {
-              actor: {
-                id: input.actor.id,
-                name: input.actor.name,
-                email: input.actor.email,
-              },
-            }
-          : {}),
-        data: input.data,
-        ...(input.cancellationKey
-          ? { cancellation_key: input.cancellationKey }
-          : {}),
-        ...(input.tenantOrBatchKey
-          ? { tenant: input.tenantOrBatchKey }
-          : {}),
-      },
-      input.idempotencyKey
-        ? { idempotencyKey: input.idempotencyKey }
-        : undefined
-    );
+    try {
+      await this.client.workflows.trigger(
+        input.workflow,
+        {
+          recipients: input.recipients.map((r) => ({
+            id: r.id,
+            name: r.name,
+            email: r.email,
+          })),
+          ...(input.actor
+            ? {
+                actor: {
+                  id: input.actor.id,
+                  name: input.actor.name,
+                  email: input.actor.email,
+                },
+              }
+            : {}),
+          data: input.data,
+          ...(input.cancellationKey
+            ? { cancellation_key: input.cancellationKey }
+            : {}),
+          ...(input.tenantOrBatchKey
+            ? { tenant: input.tenantOrBatchKey }
+            : {}),
+        },
+        input.idempotencyKey
+          ? { idempotencyKey: input.idempotencyKey }
+          : undefined
+      );
+    } catch (error) {
+      console.warn(
+        `[notifications] Knock triggerWorkflow failed for workflow "${input.workflow}":`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 
   async listFeed(_userId: string): Promise<InAppNotificationItem[]> {
@@ -353,12 +367,19 @@ export class KnockNotificationAdapter implements NotificationProviderAdapter {
   }
 
   async cancelWorkflow(input: NotificationCancelInput): Promise<void> {
-    await this.client.workflows.cancel(input.workflow, {
-      cancellation_key: input.cancellationKey,
-      ...(input.recipients
-        ? { recipients: input.recipients.map((r) => r.id) }
-        : {}),
-    });
+    try {
+      await this.client.workflows.cancel(input.workflow, {
+        cancellation_key: input.cancellationKey,
+        ...(input.recipients
+          ? { recipients: input.recipients.map((r) => r.id) }
+          : {}),
+      });
+    } catch (error) {
+      console.warn(
+        `[notifications] Knock cancelWorkflow failed for workflow "${input.workflow}":`,
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 }
 
