@@ -26,32 +26,21 @@ import {
   videoWatchEvents,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
+import {
+  NOTIFICATION_SUBKINDS,
+  type CanonicalDomainRole,
+  type NotificationKind,
+  type NotificationSubkind,
+} from "~/lib/notification-types";
+
+export type {
+  CanonicalDomainRole,
+  NotificationKind,
+  NotificationSubkind,
+};
+export { NOTIFICATION_SUBKINDS };
 
 export type Db = BetterSQLite3Database<typeof schema>;
-
-export type CanonicalDomainRole =
-  | "Student"
-  | "Instructor"
-  | "Team Admin"
-  | "Platform Admin";
-
-export type NotificationKind = "transactional" | "engagement";
-
-export type NotificationSubkind =
-  | "adherence_reminder"
-  | "course_recommendation"
-  | "comment_root"
-  | "comment_reply"
-  | "individual_purchase"
-  | "team_licence_purchase"
-  | "purchase_digest"
-  | "seat_claimed"
-  | "refund_open"
-  | "refund_approved"
-  | "refund_declined"
-  | "refund_issued"
-  | "refund_failed"
-  | "course_status";
 
 export interface NotificationPreferences {
   userId: number;
@@ -92,14 +81,22 @@ export interface NotificationTriggerInput {
   data: Record<string, unknown>;
   cancellationKey?: string;
   idempotencyKey?: string;
+  tenantOrBatchKey?: string;
+}
+
+export interface NotificationCancelInput {
+  workflow: string;
+  cancellationKey: string;
+  recipients?: NotificationRecipient[];
 }
 
 export interface NotificationProviderAdapter {
+  identifyUser(user: NotificationRecipient): Promise<void>;
   triggerWorkflow(input: NotificationTriggerInput): Promise<void>;
   listFeed(userId: string): Promise<InAppNotificationItem[]>;
   markAsRead(userId: string, itemId: string): Promise<void>;
   markAllAsRead(userId: string): Promise<void>;
-  cancelWorkflow(workflow: string, cancellationKey: string): Promise<void>;
+  cancelWorkflow(input: NotificationCancelInput): Promise<void>;
 }
 
 const DEFAULT_PREFERENCES: Omit<NotificationPreferences, "userId"> = {
@@ -194,10 +191,15 @@ export function updateNotificationPreferences(
  * Deterministic in-memory notification adapter for tests, seeding, and offline dev.
  */
 export class InMemoryNotificationAdapter implements NotificationProviderAdapter {
+  public readonly identified: NotificationRecipient[] = [];
   public readonly triggered: NotificationTriggerInput[] = [];
-  public readonly cancelled: Array<{ workflow: string; cancellationKey: string }> = [];
+  public readonly cancelled: NotificationCancelInput[] = [];
   private readonly feedByUser = new Map<string, InAppNotificationItem[]>();
   private nextId = 1;
+
+  async identifyUser(user: NotificationRecipient): Promise<void> {
+    this.identified.push(user);
+  }
 
   async triggerWorkflow(input: NotificationTriggerInput): Promise<void> {
     this.triggered.push(input);
@@ -279,30 +281,10 @@ export class InMemoryNotificationAdapter implements NotificationProviderAdapter 
     );
   }
 
-  async cancelWorkflow(
-    workflow: string,
-    cancellationKey: string
-  ): Promise<void> {
-    this.cancelled.push({ workflow, cancellationKey });
+  async cancelWorkflow(input: NotificationCancelInput): Promise<void> {
+    this.cancelled.push(input);
   }
 }
-
-const NOTIFICATION_SUBKINDS: ReadonlySet<string> = new Set<NotificationSubkind>([
-  "adherence_reminder",
-  "course_recommendation",
-  "comment_root",
-  "comment_reply",
-  "individual_purchase",
-  "team_licence_purchase",
-  "purchase_digest",
-  "seat_claimed",
-  "refund_open",
-  "refund_approved",
-  "refund_declined",
-  "refund_issued",
-  "refund_failed",
-  "course_status",
-]);
 
 function isNotificationSubkind(value: unknown): value is NotificationSubkind {
   return typeof value === "string" && NOTIFICATION_SUBKINDS.has(value);
@@ -318,27 +300,43 @@ export class KnockNotificationAdapter implements NotificationProviderAdapter {
     this.client = new Knock({ apiKey });
   }
 
-  async triggerWorkflow(input: NotificationTriggerInput): Promise<void> {
-    await this.client.workflows.trigger(input.workflow, {
-      recipients: input.recipients.map((r) => ({
-        id: r.id,
-        name: r.name,
-        email: r.email,
-      })),
-      ...(input.actor
-        ? {
-            actor: {
-              id: input.actor.id,
-              name: input.actor.name,
-              email: input.actor.email,
-            },
-          }
-        : {}),
-      data: input.data,
-      ...(input.cancellationKey
-        ? { cancellation_key: input.cancellationKey }
-        : {}),
+  async identifyUser(user: NotificationRecipient): Promise<void> {
+    await this.client.users.update(user.id, {
+      name: user.name,
+      email: user.email,
     });
+  }
+
+  async triggerWorkflow(input: NotificationTriggerInput): Promise<void> {
+    await this.client.workflows.trigger(
+      input.workflow,
+      {
+        recipients: input.recipients.map((r) => ({
+          id: r.id,
+          name: r.name,
+          email: r.email,
+        })),
+        ...(input.actor
+          ? {
+              actor: {
+                id: input.actor.id,
+                name: input.actor.name,
+                email: input.actor.email,
+              },
+            }
+          : {}),
+        data: input.data,
+        ...(input.cancellationKey
+          ? { cancellation_key: input.cancellationKey }
+          : {}),
+        ...(input.tenantOrBatchKey
+          ? { tenant: input.tenantOrBatchKey }
+          : {}),
+      },
+      input.idempotencyKey
+        ? { idempotencyKey: input.idempotencyKey }
+        : undefined
+    );
   }
 
   async listFeed(_userId: string): Promise<InAppNotificationItem[]> {
@@ -354,12 +352,12 @@ export class KnockNotificationAdapter implements NotificationProviderAdapter {
     // Handled client-side by KnockFeedProvider when public keys are configured.
   }
 
-  async cancelWorkflow(
-    workflow: string,
-    cancellationKey: string
-  ): Promise<void> {
-    await this.client.workflows.cancel(workflow, {
-      cancellation_key: cancellationKey,
+  async cancelWorkflow(input: NotificationCancelInput): Promise<void> {
+    await this.client.workflows.cancel(input.workflow, {
+      cancellation_key: input.cancellationKey,
+      ...(input.recipients
+        ? { recipients: input.recipients.map((r) => r.id) }
+        : {}),
     });
   }
 }
@@ -1543,10 +1541,56 @@ export async function cancelAdherenceReminder(
   params: { userId: number },
   adapter: NotificationProviderAdapter = getNotificationAdapter()
 ): Promise<void> {
-  await adapter.cancelWorkflow(
-    ADHERENCE_WORKFLOW,
-    adherenceCancellationKey(params.userId)
-  );
+  await adapter.cancelWorkflow({
+    workflow: ADHERENCE_WORKFLOW,
+    cancellationKey: adherenceCancellationKey(params.userId),
+  });
+}
+
+/**
+ * Cancels the 72-hour Adherence Reminder for Students whose Enrollments were
+ * refunded (either an Individual Purchase buyer or Students who claimed Seats
+ * on a Team Licence) when they have 0 remaining incomplete Active Enrollments.
+ * Never resets the adherence timer if incomplete Active Enrollments remain.
+ */
+export async function cancelAdherenceForRefundedEnrollments(
+  db: Db,
+  params: { purchaseId: number },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const purchase = db
+    .select({ id: purchases.id, userId: purchases.userId })
+    .from(purchases)
+    .where(eq(purchases.id, params.purchaseId))
+    .get();
+
+  if (!purchase) {
+    return;
+  }
+
+  const purchaseCoupons = db
+    .select({ redeemedByUserId: coupons.redeemedByUserId })
+    .from(coupons)
+    .where(eq(coupons.purchaseId, params.purchaseId))
+    .all();
+
+  const affectedStudentIds =
+    purchaseCoupons.length > 0
+      ? Array.from(
+          new Set(
+            purchaseCoupons
+              .map((c) => c.redeemedByUserId)
+              .filter((id): id is number => id !== null)
+          )
+        )
+      : [purchase.userId];
+
+  for (const studentId of affectedStudentIds) {
+    const remaining = findIncompleteActiveCourses(db, studentId);
+    if (remaining.length === 0) {
+      await cancelAdherenceReminder(db, { userId: studentId }, adapter);
+    }
+  }
 }
 
 interface IncompleteCourseCandidate {

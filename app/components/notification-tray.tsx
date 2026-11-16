@@ -22,12 +22,13 @@ import {
 } from "lucide-react";
 import { UserRole } from "~/db/schema";
 import { cn, formatRelativeTime } from "~/lib/utils";
-import type {
-  CanonicalDomainRole,
-  InAppNotificationItem,
-  NotificationKind,
-  NotificationSubkind,
-} from "~/services/notifications.server";
+import {
+  NOTIFICATION_SUBKINDS,
+  type CanonicalDomainRole,
+  type NotificationKind,
+  type NotificationSubkind,
+} from "~/lib/notification-types";
+import type { InAppNotificationItem } from "~/services/notifications.server";
 
 export interface TrayUser {
   id: number;
@@ -385,23 +386,6 @@ function LocalNotificationTray({
   );
 }
 
-const VALID_SUBKINDS: ReadonlySet<string> = new Set<NotificationSubkind>([
-  "adherence_reminder",
-  "course_recommendation",
-  "comment_root",
-  "comment_reply",
-  "individual_purchase",
-  "team_licence_purchase",
-  "purchase_digest",
-  "seat_claimed",
-  "refund_open",
-  "refund_approved",
-  "refund_declined",
-  "refund_issued",
-  "refund_failed",
-  "course_status",
-]);
-
 function readStringField(
   record: Record<string, unknown> | null | undefined,
   key: string,
@@ -428,7 +412,7 @@ function KnockFeedTray({
   const items: InAppNotificationItem[] = rawItems.map((feedItem) => {
     const dataRecord = feedItem.data ?? {};
     const rawSubkind = readStringField(dataRecord, "subkind", "comment_root");
-    const subkind: NotificationSubkind = VALID_SUBKINDS.has(rawSubkind)
+    const subkind: NotificationSubkind = NOTIFICATION_SUBKINDS.has(rawSubkind)
       ? (rawSubkind as NotificationSubkind)
       : "comment_root";
     const kind: NotificationKind =

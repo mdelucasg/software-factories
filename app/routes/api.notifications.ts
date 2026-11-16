@@ -24,7 +24,7 @@ export async function action({ request }: Route.ActionArgs) {
   const formData = await request.formData();
   const parsed = parseFormData(formData, notificationActionSchema);
   if (!parsed.success) {
-    return data({ ok: false, errors: parsed.errors }, { status: 400 });
+    throw data({ ok: false, errors: parsed.errors }, { status: 400 });
   }
 
   const adapter = getNotificationAdapter();

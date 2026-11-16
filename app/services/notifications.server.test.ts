@@ -27,6 +27,7 @@ import {
 } from "~/db/schema";
 import {
   InMemoryNotificationAdapter,
+  cancelAdherenceForRefundedEnrollments,
   cancelAdherenceReminder,
   getNotificationPreferences,
   notifyCommentPosted,
@@ -1877,6 +1878,215 @@ describe("notifications.server", () => {
         {
           workflow: "adherence-reminder",
           cancellationKey: `adherence-student-${base.user.id}`,
+        },
+      ]);
+    });
+  });
+
+  describe("cancelAdherenceForRefundedEnrollments", () => {
+    it("cancels adherence for an Individual Purchase buyer when 0 incomplete Active Enrollments remain", async () => {
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await cancelAdherenceForRefundedEnrollments(
+        db,
+        { purchaseId: purchase.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(0);
+      expect(adapter.cancelled).toEqual([
+        {
+          workflow: "adherence-reminder",
+          cancellationKey: `adherence-student-${base.user.id}`,
+        },
+      ]);
+    });
+
+    it("does not cancel or reset adherence timer when an Individual Purchase buyer still has another incomplete Active Enrollment", async () => {
+      const otherCourse = db
+        .insert(courses)
+        .values({
+          title: "Other Course",
+          slug: "other-course",
+          description: "Desc",
+          salesCopy: "Sales copy",
+          price: 2900,
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+        })
+        .returning()
+        .get();
+      const mod = db
+        .insert(modules)
+        .values({ courseId: otherCourse.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      db.insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .run();
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: otherCourse.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await cancelAdherenceForRefundedEnrollments(
+        db,
+        { purchaseId: purchase.id },
+        adapter
+      );
+
+      expect(adapter.cancelled).toHaveLength(0);
+      expect(adapter.triggered).toHaveLength(0);
+    });
+
+    it("cancels adherence for Students who claimed Seats on a Team Licence when 0 incomplete Active Enrollments remain, without touching the Team Admin", async () => {
+      const teamAdmin = db
+        .insert(users)
+        .values({
+          name: "Team Admin",
+          email: "teamadmin-refund@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+      const seatStudent1 = base.user;
+      const seatStudent2 = db
+        .insert(users)
+        .values({
+          name: "Seat Student 2",
+          email: "seat2-refund@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      const otherCourse = db
+        .insert(courses)
+        .values({
+          title: "Second Course",
+          slug: "second-course-team-refund",
+          description: "Desc",
+          salesCopy: "Sales copy",
+          price: 2900,
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+        })
+        .returning()
+        .get();
+      const mod = db
+        .insert(modules)
+        .values({ courseId: otherCourse.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      db.insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .run();
+      // seatStudent2 still has an incomplete Active Enrollment in another course
+      db.insert(enrollments)
+        .values({
+          userId: seatStudent2.id,
+          courseId: otherCourse.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      const team = db.insert(teams).values({}).returning().get();
+      const teamPurchase = db
+        .insert(purchases)
+        .values({
+          userId: teamAdmin.id,
+          courseId: base.course.id,
+          amountPaid: 10000,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      db.insert(coupons)
+        .values([
+          {
+            code: "SEAT-1",
+            purchaseId: teamPurchase.id,
+            courseId: base.course.id,
+            teamId: team.id,
+            redeemedByUserId: seatStudent1.id,
+            redeemedAt: "2026-10-01T10:00:00.000Z",
+          },
+          {
+            code: "SEAT-2",
+            purchaseId: teamPurchase.id,
+            courseId: base.course.id,
+            teamId: team.id,
+            redeemedByUserId: seatStudent2.id,
+            redeemedAt: "2026-10-01T11:00:00.000Z",
+          },
+          {
+            code: "SEAT-3",
+            purchaseId: teamPurchase.id,
+            courseId: base.course.id,
+            teamId: team.id,
+          },
+        ])
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await cancelAdherenceForRefundedEnrollments(
+        db,
+        { purchaseId: teamPurchase.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(0);
+      expect(adapter.cancelled).toEqual([
+        {
+          workflow: "adherence-reminder",
+          cancellationKey: `adherence-student-${seatStudent1.id}`,
+        },
+      ]);
+    });
+  });
+
+  describe("NotificationProviderAdapter identifyUser", () => {
+    it("records identified users in InMemoryNotificationAdapter", async () => {
+      const adapter = new InMemoryNotificationAdapter();
+      await adapter.identifyUser({
+        id: "42",
+        name: "Ada Lovelace",
+        email: "ada@example.com",
+      });
+
+      expect(adapter.identified).toEqual([
+        {
+          id: "42",
+          name: "Ada Lovelace",
+          email: "ada@example.com",
         },
       ]);
     });

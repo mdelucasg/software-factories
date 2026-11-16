@@ -30,6 +30,10 @@ import {
   updateNotificationPreferences,
 } from "~/services/notifications.server";
 
+const settingsIntentSchema = z.object({
+  intent: z.enum(["update-notifications"]).optional(),
+});
+
 const settingsSchema = z.object({
   name: z.string().trim().min(1, "Name cannot be empty."),
   bio: z.string().trim().optional(),
@@ -107,15 +111,21 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   const formData = await request.formData();
-  const intent = formData.get("intent");
+  const parsedIntent = parseFormData(formData, settingsIntentSchema);
 
-  if (intent === "update-notifications") {
+  if (
+    parsedIntent.success &&
+    parsedIntent.data.intent === "update-notifications"
+  ) {
     const parsedPrefs = parseFormData(formData, notificationPrefsSchema);
     if (!parsedPrefs.success) {
       return data({ errors: parsedPrefs.errors }, { status: 400 });
     }
-    if (parsedPrefs.data.courseRecommendationsEnabled !== undefined && currentUser.role !== UserRole.Student) {
-      return data(
+    if (
+      parsedPrefs.data.courseRecommendationsEnabled !== undefined &&
+      currentUser.role !== UserRole.Student
+    ) {
+      throw data(
         {
           errors: {
             courseRecommendationsEnabled:
