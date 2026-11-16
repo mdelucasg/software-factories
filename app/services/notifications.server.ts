@@ -1,9 +1,10 @@
 import Knock from "@knocklabs/node";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, eq, isNull, ne, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import {
   CourseStatus,
+  LessonProgressStatus,
   PurchaseDigestFrequency,
   TeamMemberRole,
   UserRole,
@@ -12,13 +13,17 @@ import {
   coupons,
   courses,
   enrollments,
+  lessonProgress,
   lessons,
   modules,
   notificationPreferences,
   purchases,
+  quizAttempts,
+  quizzes,
   refunds,
   teamMembers,
   users,
+  videoWatchEvents,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
 
@@ -1522,4 +1527,283 @@ export async function notifyRefundStatusChanged(
       },
     });
   }
+}
+
+const ADHERENCE_WORKFLOW = "adherence-reminder";
+
+function adherenceCancellationKey(userId: number): string {
+  return `adherence-student-${userId}`;
+}
+
+/**
+ * Cancels the Student's global 72-hour Adherence Reminder workflow.
+ */
+export async function cancelAdherenceReminder(
+  _db: Db,
+  params: { userId: number },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  await adapter.cancelWorkflow(
+    ADHERENCE_WORKFLOW,
+    adherenceCancellationKey(params.userId)
+  );
+}
+
+interface IncompleteCourseCandidate {
+  courseId: number;
+  courseTitle: string;
+  courseSlug: string;
+  nextLessonId: number;
+  nextLessonTitle: string;
+  progressPercent: number;
+  lastActivityAt: string;
+  enrollmentId: number;
+}
+
+function resolveCourseIdForActivity(
+  db: Db,
+  params: { courseId?: number; lessonId?: number }
+): number | undefined {
+  if (params.courseId !== undefined) {
+    return params.courseId;
+  }
+  if (params.lessonId === undefined) {
+    return undefined;
+  }
+  const row = db
+    .select({ courseId: modules.courseId })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(lessons.id, params.lessonId))
+    .get();
+  return row?.courseId;
+}
+
+function getLatestCourseActivityAt(
+  db: Db,
+  userId: number,
+  lessonIds: number[],
+  enrolledAt: string
+): string {
+  let latest = enrolledAt;
+  if (lessonIds.length === 0) {
+    return latest;
+  }
+
+  const completedRows = db
+    .select({ completedAt: lessonProgress.completedAt })
+    .from(lessonProgress)
+    .where(
+      and(
+        eq(lessonProgress.userId, userId),
+        inArray(lessonProgress.lessonId, lessonIds)
+      )
+    )
+    .all();
+  for (const row of completedRows) {
+    if (row.completedAt && row.completedAt > latest) {
+      latest = row.completedAt;
+    }
+  }
+
+  const videoRows = db
+    .select({ createdAt: videoWatchEvents.createdAt })
+    .from(videoWatchEvents)
+    .where(
+      and(
+        eq(videoWatchEvents.userId, userId),
+        inArray(videoWatchEvents.lessonId, lessonIds)
+      )
+    )
+    .all();
+  for (const row of videoRows) {
+    if (row.createdAt > latest) {
+      latest = row.createdAt;
+    }
+  }
+
+  const quizRows = db
+    .select({ attemptedAt: quizAttempts.attemptedAt })
+    .from(quizAttempts)
+    .innerJoin(quizzes, eq(quizAttempts.quizId, quizzes.id))
+    .where(
+      and(
+        eq(quizAttempts.userId, userId),
+        inArray(quizzes.lessonId, lessonIds)
+      )
+    )
+    .all();
+  for (const row of quizRows) {
+    if (row.attemptedAt > latest) {
+      latest = row.attemptedAt;
+    }
+  }
+
+  return latest;
+}
+
+function findIncompleteActiveCourses(
+  db: Db,
+  userId: number
+): IncompleteCourseCandidate[] {
+  const activeEnrollments = db
+    .select({
+      enrollmentId: enrollments.id,
+      courseId: enrollments.courseId,
+      enrolledAt: enrollments.enrolledAt,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(eq(enrollments.userId, userId))
+    .orderBy(desc(enrollments.enrolledAt), desc(enrollments.id))
+    .all();
+
+  if (activeEnrollments.length === 0) {
+    return [];
+  }
+
+  const completedRows = db
+    .select({ lessonId: lessonProgress.lessonId })
+    .from(lessonProgress)
+    .where(
+      and(
+        eq(lessonProgress.userId, userId),
+        eq(lessonProgress.status, LessonProgressStatus.Completed)
+      )
+    )
+    .all();
+  const completedLessonIds = new Set(completedRows.map((r) => r.lessonId));
+
+  const candidates: IncompleteCourseCandidate[] = [];
+
+  for (const enrollment of activeEnrollments) {
+    const courseLessons = db
+      .select({
+        id: lessons.id,
+        title: lessons.title,
+      })
+      .from(lessons)
+      .innerJoin(modules, eq(lessons.moduleId, modules.id))
+      .where(eq(modules.courseId, enrollment.courseId))
+      .orderBy(asc(modules.position), asc(lessons.position), asc(lessons.id))
+      .all();
+
+    if (courseLessons.length === 0) {
+      continue;
+    }
+
+    const nextLesson = courseLessons.find((l) => !completedLessonIds.has(l.id));
+    if (!nextLesson) {
+      continue;
+    }
+
+    const completedCount = courseLessons.filter((l) =>
+      completedLessonIds.has(l.id)
+    ).length;
+    const progressPercent = Math.round(
+      (completedCount / courseLessons.length) * 100
+    );
+    const lastActivityAt = getLatestCourseActivityAt(
+      db,
+      userId,
+      courseLessons.map((l) => l.id),
+      enrollment.enrolledAt
+    );
+
+    candidates.push({
+      courseId: enrollment.courseId,
+      courseTitle: enrollment.courseTitle,
+      courseSlug: enrollment.courseSlug,
+      nextLessonId: nextLesson.id,
+      nextLessonTitle: nextLesson.title,
+      progressPercent,
+      lastActivityAt,
+      enrollmentId: enrollment.enrollmentId,
+    });
+  }
+
+  return candidates;
+}
+
+/**
+ * Records discrete Learning Activity for a Student, arming or restarting their
+ * single global 72-hour Adherence Reminder timer, or cancelling it when no
+ * incomplete Active Enrollments remain.
+ */
+export async function recordLearningActivity(
+  db: Db,
+  params: {
+    userId: number;
+    courseId?: number;
+    lessonId?: number;
+    videoEventType?: string;
+  },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  if (
+    params.videoEventType !== undefined &&
+    params.videoEventType !== "play" &&
+    params.videoEventType !== "ended"
+  ) {
+    return;
+  }
+
+  const user = db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, params.userId))
+    .get();
+
+  if (!user) {
+    return;
+  }
+
+  const prefs = getNotificationPreferences(db, params.userId);
+  if (!prefs.adherenceRemindersEnabled) {
+    return;
+  }
+
+  const candidates = findIncompleteActiveCourses(db, params.userId);
+  if (candidates.length === 0) {
+    await cancelAdherenceReminder(db, { userId: params.userId }, adapter);
+    return;
+  }
+
+  const preferredCourseId = resolveCourseIdForActivity(db, params);
+  const preferred =
+    preferredCourseId !== undefined
+      ? candidates.find((c) => c.courseId === preferredCourseId)
+      : undefined;
+
+  const chosen =
+    preferred ??
+    [...candidates].sort((a, b) => {
+      if (b.lastActivityAt !== a.lastActivityAt) {
+        return b.lastActivityAt > a.lastActivityAt ? 1 : -1;
+      }
+      return b.enrollmentId - a.enrollmentId;
+    })[0];
+
+  await adapter.triggerWorkflow({
+    workflow: ADHERENCE_WORKFLOW,
+    recipients: [toNotificationRecipient(user)],
+    cancellationKey: adherenceCancellationKey(params.userId),
+    data: {
+      kind: "engagement",
+      subkind: "adherence_reminder",
+      badgeLabel: "Adherence Reminder",
+      title: `Continue "${chosen.courseTitle}"`,
+      body: `You haven't studied for 72h. Pick up with "${chosen.nextLessonTitle}".`,
+      meta: `72h inactivity · ${chosen.progressPercent}% complete`,
+      deepLink: `/courses/${chosen.courseSlug}/lessons/${chosen.nextLessonId}`,
+      ctaLabel: "Retomar Lesson",
+      progressPercent: chosen.progressPercent,
+      courseTitle: chosen.courseTitle,
+      nextLessonTitle: chosen.nextLessonTitle,
+      inactivityWindow: "72h",
+      createdAt: new Date().toISOString(),
+    },
+  });
 }

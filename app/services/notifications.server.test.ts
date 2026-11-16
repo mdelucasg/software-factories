@@ -7,21 +7,27 @@ import {
   RefundStatus,
   TeamMemberRole,
   UserRole,
+  LessonProgressStatus,
   categories,
   comments,
   coupons,
   courses,
   enrollments,
+  lessonProgress,
   lessons,
   modules,
   purchases,
+  quizAttempts,
+  quizzes,
   refunds,
   teamMembers,
   teams,
   users,
+  videoWatchEvents,
 } from "~/db/schema";
 import {
   InMemoryNotificationAdapter,
+  cancelAdherenceReminder,
   getNotificationPreferences,
   notifyCommentPosted,
   notifyCourseStatusChanged,
@@ -30,6 +36,7 @@ import {
   notifyRefundRequestOpened,
   notifyRefundStatusChanged,
   notifySeatClaimed,
+  recordLearningActivity,
   transitionCourseStatus,
   updateNotificationPreferences,
 } from "./notifications.server";
@@ -1479,6 +1486,399 @@ describe("notifications.server", () => {
         deepLink: "/admin/refunds?status=approved",
         urgent: true,
       });
+    });
+  });
+
+  describe("recordLearningActivity & cancelAdherenceReminder (Ticket #14)", () => {
+    it("schedules adherence-reminder with deterministic cancellationKey on Active enrollment", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      const lesson1 = db
+        .insert(lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Lesson 1: Intro",
+          position: 1,
+        })
+        .returning()
+        .get();
+      db.insert(lessons)
+        .values({
+          moduleId: mod.id,
+          title: "Lesson 2: Next",
+          position: 2,
+        })
+        .run();
+
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, courseId: base.course.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(1);
+      expect(adapter.triggered[0]).toMatchObject({
+        workflow: "adherence-reminder",
+        cancellationKey: `adherence-student-${base.user.id}`,
+        recipients: [{ id: String(base.user.id) }],
+        data: {
+          kind: "engagement",
+          subkind: "adherence_reminder",
+          ctaLabel: "Retomar Lesson",
+          inactivityWindow: "72h",
+          progressPercent: 0,
+          courseTitle: base.course.title,
+          nextLessonTitle: "Lesson 1: Intro",
+          deepLink: `/courses/${base.course.slug}/lessons/${lesson1.id}`,
+        },
+      });
+    });
+
+    it("restarts on lesson completion and quiz submission, updating progressPercent and next incomplete lesson", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      const lesson1 = db
+        .insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .returning()
+        .get();
+      const lesson2 = db
+        .insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 2", position: 2 })
+        .returning()
+        .get();
+      const quiz = db
+        .insert(quizzes)
+        .values({ lessonId: lesson2.id, title: "Quiz 2", passingScore: 0.7 })
+        .returning()
+        .get();
+
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      db.insert(lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lesson1.id,
+          status: LessonProgressStatus.Completed,
+          completedAt: "2026-10-02T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, lessonId: lesson1.id },
+        adapter
+      );
+
+      db.insert(quizAttempts)
+        .values({
+          userId: base.user.id,
+          quizId: quiz.id,
+          score: 1,
+          passed: true,
+          attemptedAt: "2026-10-02T11:00:00.000Z",
+        })
+        .run();
+
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, lessonId: lesson2.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(2);
+      expect(adapter.triggered[0]).toMatchObject({
+        cancellationKey: `adherence-student-${base.user.id}`,
+        data: {
+          progressPercent: 50,
+          nextLessonTitle: "Lesson 2",
+          deepLink: `/courses/${base.course.slug}/lessons/${lesson2.id}`,
+        },
+      });
+      expect(adapter.triggered[1]).toMatchObject({
+        cancellationKey: `adherence-student-${base.user.id}`,
+        data: {
+          progressPercent: 50,
+          nextLessonTitle: "Lesson 2",
+          deepLink: `/courses/${base.course.slug}/lessons/${lesson2.id}`,
+        },
+      });
+    });
+
+    it("triggers on video play/ended and ignores video progress/pause events", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      const lesson1 = db
+        .insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .returning()
+        .get();
+
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, lessonId: lesson1.id, videoEventType: "play" },
+        adapter
+      );
+      await recordLearningActivity(
+        db,
+        {
+          userId: base.user.id,
+          lessonId: lesson1.id,
+          videoEventType: "progress",
+        },
+        adapter
+      );
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, lessonId: lesson1.id, videoEventType: "pause" },
+        adapter
+      );
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, lessonId: lesson1.id, videoEventType: "ended" },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(2);
+      expect(adapter.triggered[0].cancellationKey).toBe(
+        `adherence-student-${base.user.id}`
+      );
+      expect(adapter.triggered[1].cancellationKey).toBe(
+        `adherence-student-${base.user.id}`
+      );
+    });
+
+    it("falls back to the most recent incomplete Active Enrollment when the current course is completed 100%", async () => {
+      const courseB = db
+        .insert(courses)
+        .values({
+          title: "Course B",
+          slug: "course-b",
+          description: "Second course",
+          salesCopy: "Second course copy",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+          price: 1000,
+        })
+        .returning()
+        .get();
+
+      const modA = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Mod A", position: 1 })
+        .returning()
+        .get();
+      const lessonA = db
+        .insert(lessons)
+        .values({ moduleId: modA.id, title: "Lesson A1", position: 1 })
+        .returning()
+        .get();
+
+      const modB = db
+        .insert(modules)
+        .values({ courseId: courseB.id, title: "Mod B", position: 1 })
+        .returning()
+        .get();
+      const lessonB = db
+        .insert(lessons)
+        .values({ moduleId: modB.id, title: "Lesson B1", position: 1 })
+        .returning()
+        .get();
+
+      db.insert(enrollments)
+        .values([
+          {
+            userId: base.user.id,
+            courseId: courseB.id,
+            enrolledAt: "2026-10-01T10:00:00.000Z",
+          },
+          {
+            userId: base.user.id,
+            courseId: base.course.id,
+            enrolledAt: "2026-10-02T10:00:00.000Z",
+          },
+        ])
+        .run();
+
+      db.insert(lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lessonA.id,
+          status: LessonProgressStatus.Completed,
+          completedAt: "2026-10-03T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, courseId: base.course.id, lessonId: lessonA.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(1);
+      expect(adapter.triggered[0].data).toMatchObject({
+        courseTitle: "Course B",
+        nextLessonTitle: "Lesson B1",
+        progressPercent: 0,
+        deepLink: `/courses/course-b/lessons/${lessonB.id}`,
+      });
+    });
+
+    it("cancels adherence-reminder when 100% of all Active Enrollments are completed", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      const lesson1 = db
+        .insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .returning()
+        .get();
+
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      db.insert(lessonProgress)
+        .values({
+          userId: base.user.id,
+          lessonId: lesson1.id,
+          status: LessonProgressStatus.Completed,
+          completedAt: "2026-10-02T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, courseId: base.course.id, lessonId: lesson1.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(0);
+      expect(adapter.cancelled).toEqual([
+        {
+          workflow: "adherence-reminder",
+          cancellationKey: `adherence-student-${base.user.id}`,
+        },
+      ]);
+    });
+
+    it("cancels adherence-reminder when the last incomplete Active Enrollment becomes Lapsed after refund approval", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      db.insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .run();
+
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, courseId: base.course.id },
+        adapter
+      );
+      expect(adapter.triggered).toHaveLength(1);
+
+      // Simulate Enrollment becoming Lapsed (deleted on Refund Request approval)
+      db.delete(enrollments).run();
+
+      await recordLearningActivity(db, { userId: base.user.id }, adapter);
+      expect(adapter.cancelled).toEqual([
+        {
+          workflow: "adherence-reminder",
+          cancellationKey: `adherence-student-${base.user.id}`,
+        },
+      ]);
+    });
+
+    it("does not schedule when adherenceRemindersEnabled is false and cancels immediately on opt-out", async () => {
+      const mod = db
+        .insert(modules)
+        .values({ courseId: base.course.id, title: "Module 1", position: 1 })
+        .returning()
+        .get();
+      db.insert(lessons)
+        .values({ moduleId: mod.id, title: "Lesson 1", position: 1 })
+        .run();
+      db.insert(enrollments)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          enrolledAt: "2026-10-01T10:00:00.000Z",
+        })
+        .run();
+
+      updateNotificationPreferences(db, base.user.id, {
+        adherenceRemindersEnabled: false,
+      });
+
+      const adapter = new InMemoryNotificationAdapter();
+      await recordLearningActivity(
+        db,
+        { userId: base.user.id, courseId: base.course.id },
+        adapter
+      );
+      expect(adapter.triggered).toHaveLength(0);
+
+      await cancelAdherenceReminder(db, { userId: base.user.id }, adapter);
+      expect(adapter.cancelled).toEqual([
+        {
+          workflow: "adherence-reminder",
+          cancellationKey: `adherence-student-${base.user.id}`,
+        },
+      ]);
     });
   });
 });

@@ -10,7 +10,10 @@ import {
   type RenderedComment,
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
-import { notifyCommentPosted } from "~/services/notifications.server";
+import {
+  notifyCommentPosted,
+  recordLearningActivity,
+} from "~/services/notifications.server";
 import { db } from "~/db";
 import {
   categories,
@@ -734,6 +737,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     if (enrolled) {
       // Mark lesson as in-progress when viewed
       markLessonInProgress(currentUserId, lessonId);
+      await recordLearningActivity(db, {
+        userId: currentUserId,
+        courseId: course.id,
+        lessonId,
+      });
       const progress = getLessonProgress(currentUserId, lessonId);
       lessonStatus = progress?.status ?? null;
 
@@ -952,6 +960,11 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
+    await recordLearningActivity(db, {
+      userId: currentUserId,
+      courseId: course.id,
+      lessonId,
+    });
     return { success: true };
   }
 
@@ -977,6 +990,12 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (!result) {
       throw data("Failed to score quiz", { status: 500 });
     }
+
+    await recordLearningActivity(db, {
+      userId: currentUserId,
+      courseId: course.id,
+      lessonId,
+    });
 
     return { quizResult: result };
   }
