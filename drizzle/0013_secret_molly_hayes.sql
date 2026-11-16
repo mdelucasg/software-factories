@@ -1,0 +1,1 @@
+ALTER TABLE `refunds` ADD `refund_status` text;
