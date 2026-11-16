@@ -1,13 +1,17 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import {
+  CourseStatus,
   PurchaseDigestFrequency,
   RefundPayoutStatus,
   RefundStatus,
   TeamMemberRole,
   UserRole,
+  categories,
   comments,
   coupons,
+  courses,
+  enrollments,
   lessons,
   modules,
   purchases,
@@ -20,11 +24,13 @@ import {
   InMemoryNotificationAdapter,
   getNotificationPreferences,
   notifyCommentPosted,
+  notifyCourseStatusChanged,
   notifyPurchaseCompleted,
   notifyRefundRequestDecided,
   notifyRefundRequestOpened,
   notifyRefundStatusChanged,
   notifySeatClaimed,
+  transitionCourseStatus,
   updateNotificationPreferences,
 } from "./notifications.server";
 
@@ -434,6 +440,414 @@ describe("notifications.server", () => {
       await adapter.markAllAsRead(String(base.instructor.id));
       const feedAfterAll = await adapter.listFeed(String(base.instructor.id));
       expect(feedAfterAll.every((i) => !i.unread)).toBe(true);
+    });
+  });
+
+  describe("notifyCourseStatusChanged - course status transitions", () => {
+    it("notifies the instructor when a Platform Admin changes their course status", async () => {
+      const admin = db
+        .insert(users)
+        .values({
+          name: "Platform Admin",
+          email: "admin@example.com",
+          role: UserRole.Admin,
+        })
+        .returning()
+        .get();
+
+      const draftCourse = db
+        .insert(courses)
+        .values({
+          title: "Admin Moderated Course",
+          slug: "admin-moderated-course",
+          description: "A course moderated by admin",
+          salesCopy: "Sales copy",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Archived,
+          firstPublishedAt: "2026-01-01T00:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyCourseStatusChanged(
+        db,
+        {
+          courseId: draftCourse.id,
+          previousStatus: CourseStatus.Published,
+          newStatus: CourseStatus.Archived,
+          actorUserId: admin.id,
+          isFirstPublish: false,
+        },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(1);
+      const trigger = adapter.triggered[0];
+      expect(trigger.workflow).toBe("course-status-changed");
+      expect(trigger.recipients.map((r) => r.id)).toEqual([
+        String(base.instructor.id),
+      ]);
+      expect(trigger.actor?.id).toBe(String(admin.id));
+      expect(trigger.data.kind).toBe("transactional");
+      expect(trigger.data.subkind).toBe("course_status");
+      expect(trigger.data.deepLink).toBe(`/instructor/${draftCourse.id}`);
+      expect(trigger.data.previousStatus).toBe(CourseStatus.Published);
+      expect(trigger.data.newStatus).toBe(CourseStatus.Archived);
+      expect(trigger.data.courseTitle).toBe("Admin Moderated Course");
+      expect(trigger.data.actorName).toBe("Platform Admin");
+    });
+
+    it("notifies all Platform Admins when an Instructor publishes a Draft course", async () => {
+      const admin1 = db
+        .insert(users)
+        .values({
+          name: "Admin One",
+          email: "admin1@example.com",
+          role: UserRole.Admin,
+        })
+        .returning()
+        .get();
+      const admin2 = db
+        .insert(users)
+        .values({
+          name: "Admin Two",
+          email: "admin2@example.com",
+          role: UserRole.Admin,
+        })
+        .returning()
+        .get();
+
+      const publishedCourse = db
+        .insert(courses)
+        .values({
+          title: "Instructor Newly Published",
+          slug: "instructor-newly-published",
+          description: "Newly published",
+          salesCopy: "Sales copy",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+          firstPublishedAt: "2026-02-01T00:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyCourseStatusChanged(
+        db,
+        {
+          courseId: publishedCourse.id,
+          previousStatus: CourseStatus.Draft,
+          newStatus: CourseStatus.Published,
+          actorUserId: base.instructor.id,
+          isFirstPublish: false,
+        },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(1);
+      const trigger = adapter.triggered[0];
+      expect(trigger.workflow).toBe("course-published-admin");
+      expect(trigger.recipients.map((r) => r.id).sort()).toEqual(
+        [String(admin1.id), String(admin2.id)].sort()
+      );
+      expect(trigger.actor?.id).toBe(String(base.instructor.id));
+      expect(trigger.data.kind).toBe("transactional");
+      expect(trigger.data.subkind).toBe("course_status");
+      expect(trigger.data.deepLink).toBe("/admin/courses");
+      expect(trigger.data.courseTitle).toBe("Instructor Newly Published");
+      expect(trigger.data.instructorName).toBe(base.instructor.name);
+    });
+
+    it("emits course-recommendation on first publish to students with affinity by category or instructor, respecting exclusions and opt-out", async () => {
+      const otherCategory = db
+        .insert(categories)
+        .values({ name: "Design", slug: "design" })
+        .returning()
+        .get();
+
+      const otherInstructor = db
+        .insert(users)
+        .values({
+          name: "Other Instructor",
+          email: "other-inst@example.com",
+          role: UserRole.Instructor,
+        })
+        .returning()
+        .get();
+
+      // Course in same category (Programming) by another instructor
+      const sameCategoryCourse = db
+        .insert(courses)
+        .values({
+          title: "Existing Programming Course",
+          slug: "existing-programming",
+          description: "Desc",
+          salesCopy: "Sales",
+          instructorId: otherInstructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+          firstPublishedAt: "2026-01-01T00:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      // Course in different category (Design) by base.instructor
+      const sameInstructorCourse = db
+        .insert(courses)
+        .values({
+          title: "Existing Design Course",
+          slug: "existing-design",
+          description: "Desc",
+          salesCopy: "Sales",
+          instructorId: base.instructor.id,
+          categoryId: otherCategory.id,
+          status: CourseStatus.Published,
+          firstPublishedAt: "2026-01-01T00:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      // New course being published for the first time (Programming + base.instructor)
+      const newCourse = db
+        .insert(courses)
+        .values({
+          title: "Advanced TypeScript",
+          slug: "advanced-typescript",
+          description: "Desc",
+          salesCopy: "Sales",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Published,
+          firstPublishedAt: "2026-03-01T00:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      // Student 1: enrolled in sameCategoryCourse -> eligible (category affinity)
+      const studentCat = base.user;
+      db.insert(enrollments)
+        .values({ userId: studentCat.id, courseId: sameCategoryCourse.id })
+        .run();
+
+      // Student 2: enrolled in sameInstructorCourse AND sameCategoryCourse -> eligible, must receive only 1 recommendation
+      const studentBoth = db
+        .insert(users)
+        .values({
+          name: "Student Both",
+          email: "both@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+      db.insert(enrollments)
+        .values({ userId: studentBoth.id, courseId: sameInstructorCourse.id })
+        .run();
+      db.insert(enrollments)
+        .values({ userId: studentBoth.id, courseId: sameCategoryCourse.id })
+        .run();
+
+      // Student 3: enrolled in sameCategoryCourse AND already enrolled in newCourse -> excluded
+      const studentAlreadyEnrolled = db
+        .insert(users)
+        .values({
+          name: "Already Enrolled",
+          email: "already@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+      db.insert(enrollments)
+        .values({
+          userId: studentAlreadyEnrolled.id,
+          courseId: sameCategoryCourse.id,
+        })
+        .run();
+      db.insert(enrollments)
+        .values({ userId: studentAlreadyEnrolled.id, courseId: newCourse.id })
+        .run();
+
+      // Student 4: enrolled in sameCategoryCourse but opted out -> excluded
+      const studentOptOut = db
+        .insert(users)
+        .values({
+          name: "Opted Out",
+          email: "optout@example.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+      db.insert(enrollments)
+        .values({ userId: studentOptOut.id, courseId: sameCategoryCourse.id })
+        .run();
+      updateNotificationPreferences(db, studentOptOut.id, {
+        courseRecommendationsEnabled: false,
+      });
+
+      // Student 5: has no active enrollments (e.g. Lapsed/refunded) -> excluded
+      db.insert(users)
+        .values({
+          name: "Lapsed Student",
+          email: "lapsed@example.com",
+          role: UserRole.Student,
+        })
+        .run();
+
+      // Author instructor enrolled in sameCategoryCourse -> excluded
+      db.insert(enrollments)
+        .values({ userId: base.instructor.id, courseId: sameCategoryCourse.id })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyCourseStatusChanged(
+        db,
+        {
+          courseId: newCourse.id,
+          previousStatus: CourseStatus.Draft,
+          newStatus: CourseStatus.Published,
+          actorUserId: base.instructor.id,
+          isFirstPublish: true,
+        },
+        adapter
+      );
+
+      const recTriggers = adapter.triggered.filter(
+        (t) => t.workflow === "course-recommendation"
+      );
+      expect(recTriggers).toHaveLength(2);
+
+      const recipientIds = recTriggers.flatMap((t) =>
+        t.recipients.map((r) => r.id)
+      );
+      expect(recipientIds.sort()).toEqual(
+        [String(studentCat.id), String(studentBoth.id)].sort()
+      );
+
+      const catTrigger = recTriggers.find(
+        (t) => t.recipients[0].id === String(studentCat.id)
+      );
+      expect(catTrigger?.idempotencyKey).toBe(
+        `course-rec-${newCourse.id}-${studentCat.id}`
+      );
+      expect(catTrigger?.data.kind).toBe("engagement");
+      expect(catTrigger?.data.subkind).toBe("course_recommendation");
+      expect(catTrigger?.data.deepLink).toBe(`/courses/${newCourse.slug}`);
+      expect(catTrigger?.data.courseTitle).toBe("Advanced TypeScript");
+      expect(catTrigger?.data.instructorName).toBe(base.instructor.name);
+      expect(catTrigger?.data.categoryName).toBe(base.category.name);
+      expect(String(catTrigger?.data.affinityReason).length).toBeGreaterThan(0);
+
+      // Re-publishing (isFirstPublish: false) must NOT emit course-recommendation
+      const adapterRepublish = new InMemoryNotificationAdapter();
+      await notifyCourseStatusChanged(
+        db,
+        {
+          courseId: newCourse.id,
+          previousStatus: CourseStatus.Archived,
+          newStatus: CourseStatus.Published,
+          actorUserId: base.instructor.id,
+          isFirstPublish: false,
+        },
+        adapterRepublish
+      );
+      expect(
+        adapterRepublish.triggered.filter(
+          (t) => t.workflow === "course-recommendation"
+        )
+      ).toHaveLength(0);
+    });
+
+    it("transitionCourseStatus sets firstPublishedAt only on first publish and prevents duplicate recommendations on republish", async () => {
+      const { eq } = await import("drizzle-orm");
+      const draftCourse = db
+        .insert(courses)
+        .values({
+          title: "Lifecycle Course",
+          slug: "lifecycle-course",
+          description: "Desc",
+          salesCopy: "Sales",
+          instructorId: base.instructor.id,
+          categoryId: base.category.id,
+          status: CourseStatus.Draft,
+          firstPublishedAt: null,
+        })
+        .returning()
+        .get();
+
+      // Enroll base.user in base.course (same category & instructor)
+      db.insert(enrollments)
+        .values({ userId: base.user.id, courseId: base.course.id })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      const firstPublishTime = new Date("2026-04-01T10:00:00.000Z");
+
+      await transitionCourseStatus(
+        db,
+        {
+          courseId: draftCourse.id,
+          newStatus: CourseStatus.Published,
+          actorUserId: base.instructor.id,
+          now: firstPublishTime,
+        },
+        adapter
+      );
+
+      const afterFirstPublish = db
+        .select()
+        .from(courses)
+        .where(eq(courses.id, draftCourse.id))
+        .get();
+      expect(afterFirstPublish?.status).toBe(CourseStatus.Published);
+      expect(afterFirstPublish?.firstPublishedAt).toBe(
+        firstPublishTime.toISOString()
+      );
+      expect(
+        adapter.triggered.filter((t) => t.workflow === "course-recommendation")
+      ).toHaveLength(1);
+
+      // Move to Draft, then republish later
+      await transitionCourseStatus(
+        db,
+        {
+          courseId: draftCourse.id,
+          newStatus: CourseStatus.Draft,
+          actorUserId: base.instructor.id,
+          now: new Date("2026-04-02T10:00:00.000Z"),
+        },
+        adapter
+      );
+
+      const secondAdapter = new InMemoryNotificationAdapter();
+      await transitionCourseStatus(
+        db,
+        {
+          courseId: draftCourse.id,
+          newStatus: CourseStatus.Published,
+          actorUserId: base.instructor.id,
+          now: new Date("2026-04-03T10:00:00.000Z"),
+        },
+        secondAdapter
+      );
+
+      const afterRepublish = db
+        .select()
+        .from(courses)
+        .where(eq(courses.id, draftCourse.id))
+        .get();
+      expect(afterRepublish?.firstPublishedAt).toBe(
+        firstPublishTime.toISOString()
+      );
+      expect(
+        secondAdapter.triggered.filter(
+          (t) => t.workflow === "course-recommendation"
+        )
+      ).toHaveLength(0);
     });
   });
 

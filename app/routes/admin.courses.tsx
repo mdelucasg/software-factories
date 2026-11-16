@@ -28,6 +28,7 @@ import {
 } from "~/components/ui/select";
 import { AlertTriangle, BookOpen, Users } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
+import { transitionCourseStatus } from "~/services/notifications.server";
 
 const adminCourseActionSchema = z.discriminatedUnion("intent", [
   z.object({
@@ -71,15 +72,6 @@ function getEnrollmentCountForCourse(courseId: number) {
     .get();
 
   return result?.count ?? 0;
-}
-
-function updateCourseStatus(id: number, status: CourseStatus) {
-  return db
-    .update(courses)
-    .set({ status, updatedAt: new Date().toISOString() })
-    .where(eq(courses.id, id))
-    .returning()
-    .get();
 }
 
 export function meta() {
@@ -139,7 +131,11 @@ export async function action({ request }: Route.ActionArgs) {
   const { intent } = parsed.data;
 
   if (intent === "update-status") {
-    updateCourseStatus(parsed.data.courseId, parsed.data.status);
+    await transitionCourseStatus(db, {
+      courseId: parsed.data.courseId,
+      newStatus: parsed.data.status,
+      actorUserId: currentUser.id,
+    });
     return { success: true };
   }
 

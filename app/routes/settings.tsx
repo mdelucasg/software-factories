@@ -42,6 +42,7 @@ const notificationPrefsSchema = z.object({
   commentsEnabled: booleanStringSchema.optional(),
   seatClaimedEnabled: booleanStringSchema.optional(),
   purchaseDigestFrequency: z.nativeEnum(PurchaseDigestFrequency).optional(),
+  courseRecommendationsEnabled: booleanStringSchema.optional(),
 });
 
 export function meta() {
@@ -110,6 +111,17 @@ export async function action({ request }: Route.ActionArgs) {
     if (!parsedPrefs.success) {
       return data({ errors: parsedPrefs.errors }, { status: 400 });
     }
+    if (parsedPrefs.data.courseRecommendationsEnabled !== undefined && currentUser.role !== UserRole.Student) {
+      return data(
+        {
+          errors: {
+            courseRecommendationsEnabled:
+              "Only students can configure course recommendations.",
+          },
+        },
+        { status: 403 }
+      );
+    }
     const updated = updateNotificationPreferences(db, currentUser.id, {
       ...(parsedPrefs.data.commentsEnabled !== undefined
         ? { commentsEnabled: parsedPrefs.data.commentsEnabled }
@@ -120,6 +132,12 @@ export async function action({ request }: Route.ActionArgs) {
       ...(parsedPrefs.data.purchaseDigestFrequency !== undefined
         ? { purchaseDigestFrequency: parsedPrefs.data.purchaseDigestFrequency }
         : {}),
+      ...(parsedPrefs.data.courseRecommendationsEnabled !== undefined
+        ? {
+            courseRecommendationsEnabled:
+              parsedPrefs.data.courseRecommendationsEnabled,
+          }
+        : {}),
     });
     return {
       success: true,
@@ -127,6 +145,7 @@ export async function action({ request }: Route.ActionArgs) {
       commentsEnabled: updated.commentsEnabled,
       seatClaimedEnabled: updated.seatClaimedEnabled,
       purchaseDigestFrequency: updated.purchaseDigestFrequency,
+      courseRecommendationsEnabled: updated.courseRecommendationsEnabled,
     };
   }
 
@@ -163,6 +182,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     commentsEnabled?: boolean;
     seatClaimedEnabled?: boolean;
     purchaseDigestFrequency?: PurchaseDigestFrequency;
+    courseRecommendationsEnabled?: boolean;
+    errors?: Record<string, string>;
+  }>();
+  const recFetcher = useFetcher<{
+    success?: boolean;
+    message?: string;
+    courseRecommendationsEnabled?: boolean;
     errors?: Record<string, string>;
   }>();
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -170,11 +196,17 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const isInstructor = user.role === UserRole.Instructor;
   const canConfigureComments =
     user.role === UserRole.Student || isInstructor;
+  const canConfigureCourseRecommendations = user.role === UserRole.Student;
   const pendingComments = notifFetcher.formData?.get("commentsEnabled");
   const commentsEnabled =
     typeof pendingComments === "string"
       ? pendingComments === "true"
       : (notifFetcher.data?.commentsEnabled ?? notificationPrefs.commentsEnabled);
+  const courseRecommendationsEnabled =
+    recFetcher.formData !== undefined
+      ? recFetcher.formData.get("courseRecommendationsEnabled") === "true"
+      : (recFetcher.data?.courseRecommendationsEnabled ??
+        notificationPrefs.courseRecommendationsEnabled);
 
   const pendingSeatClaimed = notifFetcher.formData?.get("seatClaimedEnabled");
   const seatClaimedEnabled =
@@ -213,6 +245,20 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       if (firstError) toast.error(firstError);
     }
   }, [notifFetcher.state, notifFetcher.data]);
+
+  useEffect(() => {
+    if (recFetcher.state === "idle" && recFetcher.data?.success) {
+      toast.success(
+        recFetcher.data.message ?? "Notification preferences updated."
+      );
+    }
+    if (recFetcher.state === "idle" && recFetcher.data?.errors) {
+      const firstError = Object.values(recFetcher.data.errors)[0] as
+        | string
+        | undefined;
+      if (firstError) toast.error(firstError);
+    }
+  }, [recFetcher.state, recFetcher.data]);
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -333,6 +379,47 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 </Button>
               </div>
             </notifFetcher.Form>
+            {canConfigureCourseRecommendations && (
+              <recFetcher.Form method="post">
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="update-notifications"
+                />
+                <input
+                  type="hidden"
+                  name="courseRecommendationsEnabled"
+                  value={courseRecommendationsEnabled ? "false" : "true"}
+                />
+                <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                  <div>
+                    <Label
+                      htmlFor="course-recommendations-toggle"
+                      className="text-sm font-medium"
+                    >
+                      Course recommendations
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Receive recommendations when a new course launches in a
+                      category or from an instructor you follow.
+                    </p>
+                  </div>
+                  <Button
+                    id="course-recommendations-toggle"
+                    type="submit"
+                    variant={
+                      courseRecommendationsEnabled ? "default" : "outline"
+                    }
+                    size="sm"
+                    role="switch"
+                    aria-checked={courseRecommendationsEnabled}
+                    disabled={recFetcher.state !== "idle"}
+                  >
+                    {courseRecommendationsEnabled ? "Enabled" : "Disabled"}
+                  </Button>
+                </div>
+              </recFetcher.Form>
+            )}
 
             {isInstructor && (
               <>
