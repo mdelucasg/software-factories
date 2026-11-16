@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { Route } from "./+types/instructor.questions";
 import { requireInstructorOrAdmin, requireStaff } from "~/lib/access.server";
 import { renderComment } from "~/lib/comment-markdown.server";
+import { notifyCommentPosted } from "~/services/notifications.server";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -208,12 +209,20 @@ export async function action({ request }: Route.ActionArgs) {
   const access = await requireStaff(request, course.courseId);
 
   try {
-    createComment(
-      access.userId!,
+    if (access.userId === null) {
+      throw data("You must be logged in.", { status: 401 });
+    }
+    const created = createComment(
+      access.userId,
       question.lessonId,
       question.id,
       parsed.data.body
     );
+    await notifyCommentPosted(db, {
+      commentId: created.id,
+      lessonId: question.lessonId,
+      authorId: access.userId,
+    });
   } catch (error) {
     if (error instanceof Error) {
       return { ok: false, error: error.message };

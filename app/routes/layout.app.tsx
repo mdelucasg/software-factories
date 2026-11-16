@@ -5,6 +5,7 @@ import { DevUI } from "~/components/dev-ui";
 import { Toaster } from "sonner";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
+import { getNotificationAdapter } from "~/services/notifications.server";
 import { eq, and, or, sql, desc } from "drizzle-orm";
 import { db } from "~/db";
 import {
@@ -198,6 +199,15 @@ export async function loader({ request }: Route.LoaderArgs) {
       })
     : [];
 
+  const notifications = currentUserId
+    ? await getNotificationAdapter().listFeed(String(currentUserId))
+    : [];
+
+  const knockConfig = {
+    publicApiKey: process.env.VITE_KNOCK_PUBLIC_API_KEY?.trim() || null,
+    feedChannelId: process.env.VITE_KNOCK_FEED_CHANNEL_ID?.trim() || null,
+  };
+
   return {
     users: users.map((u) => ({ id: u.id, name: u.name, role: u.role })),
     currentUser: currentUser
@@ -213,6 +223,8 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    notifications,
+    knockConfig,
   };
 }
 
@@ -225,6 +237,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    notifications,
+    knockConfig,
   } = loaderData;
 
   return (
@@ -233,6 +247,8 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        notifications={notifications}
+        knockConfig={knockConfig}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />
