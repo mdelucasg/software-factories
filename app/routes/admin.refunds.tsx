@@ -9,7 +9,6 @@ import {
   RefundPayoutStatus,
   RefundStatus,
   UserRole,
-  purchases,
   refunds,
   users,
 } from "~/db/schema";
@@ -30,9 +29,9 @@ import {
   type RefundRequestForReview,
 } from "~/lib/refunds.server";
 import {
+  cancelAdherenceForRefundedEnrollments,
   notifyRefundRequestDecided,
   notifyRefundStatusChanged,
-  recordLearningActivity,
 } from "~/services/notifications.server";
 import { RULE_BREAK_LABELS } from "~/lib/refund-rules";
 
@@ -139,7 +138,7 @@ export async function action({ request }: Route.ActionArgs) {
     );
 
     if (!payoutResult.ok) {
-      return data(
+      throw data(
         { error: payoutResult.error },
         { status: payoutResult.status }
       );
@@ -191,13 +190,14 @@ export async function action({ request }: Route.ActionArgs) {
 
   if (intent === "approve") {
     const refundedPurchase = db
-      .select({ userId: purchases.userId })
+      .select({ purchaseId: refunds.purchaseId })
       .from(refunds)
-      .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
       .where(eq(refunds.id, refundRequestId))
       .get();
     if (refundedPurchase) {
-      await recordLearningActivity(db, { userId: refundedPurchase.userId });
+      await cancelAdherenceForRefundedEnrollments(db, {
+        purchaseId: refundedPurchase.purchaseId,
+      });
     }
   }
 
