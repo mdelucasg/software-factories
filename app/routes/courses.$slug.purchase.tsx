@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.purchase";
 import { getCurrentUserId } from "~/lib/session";
+import { notifyPurchaseCompleted } from "~/services/notifications.server";
 import { db } from "~/db";
 import {
   courses,
@@ -367,15 +368,23 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (isUserEnrolled(currentUserId, course.id)) {
       throw redirect(`/courses/${slug}`);
     }
-    createPurchase(currentUserId, course.id, pppPrice, country);
+    const purchase = createPurchase(currentUserId, course.id, pppPrice, country);
     enrollUser(currentUserId, course.id, false, false);
+    await notifyPurchaseCompleted(db, { purchaseId: purchase.id });
     throw redirect(`/courses/${slug}/welcome`);
   }
 
   // Team purchase — user does NOT get enrolled themselves
   const { quantity } = parsed.data;
   const totalPrice = pppPrice * quantity;
-  createTeamPurchase(currentUserId, course.id, totalPrice, country, quantity);
+  const { purchase } = createTeamPurchase(
+    currentUserId,
+    course.id,
+    totalPrice,
+    country,
+    quantity
+  );
+  await notifyPurchaseCompleted(db, { purchaseId: purchase.id });
   throw redirect(`/team`);
 }
 
