@@ -194,6 +194,14 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
+  return <SettingsContent key={loaderData.user.id} loaderData={loaderData} />;
+}
+
+function SettingsContent({
+  loaderData,
+}: {
+  loaderData: Route.ComponentProps["loaderData"];
+}) {
   const { user, refundRequests, notificationPrefs } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
@@ -229,26 +237,23 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const commentsEnabled =
     typeof pendingComments === "string"
       ? pendingComments === "true"
-      : (notifFetcher.data?.commentsEnabled ?? notificationPrefs.commentsEnabled);
+      : notificationPrefs.commentsEnabled;
   const courseRecommendationsEnabled =
     recFetcher.formData !== undefined
       ? recFetcher.formData.get("courseRecommendationsEnabled") === "true"
-      : (recFetcher.data?.courseRecommendationsEnabled ??
-        notificationPrefs.courseRecommendationsEnabled);
+      : notificationPrefs.courseRecommendationsEnabled;
 
   const pendingSeatClaimed = notifFetcher.formData?.get("seatClaimedEnabled");
   const seatClaimedEnabled =
     typeof pendingSeatClaimed === "string"
       ? pendingSeatClaimed === "true"
-      : (notifFetcher.data?.seatClaimedEnabled ??
-        notificationPrefs.seatClaimedEnabled);
+      : notificationPrefs.seatClaimedEnabled;
 
   const pendingDigest = notifFetcher.formData?.get("purchaseDigestFrequency");
   const purchaseDigestFrequency =
     typeof pendingDigest === "string"
       ? pendingDigest
-      : (notifFetcher.data?.purchaseDigestFrequency ??
-        notificationPrefs.purchaseDigestFrequency);
+      : notificationPrefs.purchaseDigestFrequency;
 
   const pendingAdherence = notifFetcher.formData?.get(
     "adherenceRemindersEnabled"
@@ -256,8 +261,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
   const adherenceRemindersEnabled =
     typeof pendingAdherence === "string"
       ? pendingAdherence === "true"
-      : (notifFetcher.data?.adherenceRemindersEnabled ??
-        notificationPrefs.adherenceRemindersEnabled);
+      : notificationPrefs.adherenceRemindersEnabled;
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) {
