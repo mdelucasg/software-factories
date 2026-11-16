@@ -5,12 +5,13 @@ import { z } from "zod";
 import type { Route } from "./+types/admin.refunds";
 import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
-import { RefundStatus, UserRole, users } from "~/db/schema";
+import { RefundPayoutStatus, RefundStatus, UserRole, users } from "~/db/schema";
 import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
+import { RefundPayoutBadge } from "~/components/refund-payout-badge";
 import { AlertTriangle, Receipt } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { formatPrice } from "~/lib/utils";
@@ -18,8 +19,13 @@ import {
   approveRefundRequest,
   declineRefundRequest,
   listRefundRequestsForReview,
+  updateRefundPayoutStatus,
   type RefundRequestForReview,
 } from "~/lib/refunds.server";
+import {
+  notifyRefundRequestDecided,
+  notifyRefundStatusChanged,
+} from "~/services/notifications.server";
 import { RULE_BREAK_LABELS } from "~/lib/refund-rules";
 
 const refundFilterSchema = z
@@ -44,6 +50,14 @@ const adminRefundActionSchema = z.discriminatedUnion("intent", [
       .trim()
       .min(1, "Write the buyer a note saying why it was declined.")
       .max(1000, "Please keep the note under 1000 characters."),
+  }),
+  z.object({
+    intent: z.literal("mark-issued"),
+    refundRequestId: z.coerce.number().int(),
+  }),
+  z.object({
+    intent: z.literal("mark-failed"),
+    refundRequestId: z.coerce.number().int(),
   }),
 ]);
 
@@ -103,22 +117,54 @@ export async function action({ request }: Route.ActionArgs) {
     );
   }
 
-  const { intent, refundRequestId, note } = parsed.data;
+  const { intent, refundRequestId } = parsed.data;
+
+  if (intent === "mark-issued" || intent === "mark-failed") {
+    const nextStatus =
+      intent === "mark-issued"
+        ? RefundPayoutStatus.Issued
+        : RefundPayoutStatus.Failed;
+    const payoutResult = updateRefundPayoutStatus(
+      db,
+      refundRequestId,
+      nextStatus
+    );
+
+    if (!payoutResult.ok) {
+      return data(
+        { error: payoutResult.error },
+        { status: payoutResult.status }
+      );
+    }
+
+    await notifyRefundStatusChanged(db, {
+      refundRequestId,
+      refundStatus: payoutResult.refundStatus,
+    });
+
+    return {
+      success: true,
+      message:
+        nextStatus === RefundPayoutStatus.Issued
+          ? "Refund marked as issued."
+          : "Refund marked as failed.",
+    };
+  }
 
   const result =
-    intent === "approve"
+    parsed.data.intent === "approve"
       ? approveRefundRequest(
           db,
           refundRequestId,
           platformAdmin.id,
-          note || null,
+          parsed.data.note || null,
           new Date()
         )
       : declineRefundRequest(
           db,
           refundRequestId,
           platformAdmin.id,
-          note,
+          parsed.data.note,
           new Date()
         );
 
@@ -129,6 +175,11 @@ export async function action({ request }: Route.ActionArgs) {
   console.log(
     `[email] to=${result.email.to} subject=${result.email.subject}\n${result.email.body}`
   );
+
+  await notifyRefundRequestDecided(db, {
+    refundRequestId,
+    decision: intent === "approve" ? "approved" : "declined",
+  });
 
   return {
     success: true,
@@ -288,6 +339,13 @@ function RefundRequestCard({
     );
   }
 
+  function updatePayout(intent: "mark-issued" | "mark-failed") {
+    fetcher.submit(
+      { intent, refundRequestId: String(refundRequest.id) },
+      { method: "post" }
+    );
+  }
+
   return (
     <Card>
       <CardContent className="space-y-4 p-5">
@@ -358,19 +416,47 @@ function RefundRequestCard({
             </div>
           </div>
         ) : (
-          <div className="border-t pt-4 text-sm text-muted-foreground">
-            {refundRequest.status === RefundStatus.Approved
-              ? "Approved"
-              : "Declined"}
-            {refundRequest.decidedByName &&
-              ` by ${refundRequest.decidedByName}`}
-            {refundRequest.resolvedAt &&
-              ` on ${new Date(refundRequest.resolvedAt).toLocaleDateString()}`}
+          <div className="space-y-3 border-t pt-4 text-sm text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                {refundRequest.status === RefundStatus.Approved
+                  ? "Approved"
+                  : "Declined"}
+                {refundRequest.decidedByName &&
+                  ` by ${refundRequest.decidedByName}`}
+                {refundRequest.resolvedAt &&
+                  ` on ${new Date(refundRequest.resolvedAt).toLocaleDateString()}`}
+              </div>
+              {refundRequest.status === RefundStatus.Approved &&
+                refundRequest.refundStatus && (
+                  <RefundPayoutBadge status={refundRequest.refundStatus} />
+                )}
+            </div>
             {refundRequest.decisionNote && (
-              <p className="mt-2 rounded-md bg-muted p-2 text-foreground">
+              <p className="rounded-md bg-muted p-2 text-foreground">
                 {refundRequest.decisionNote}
               </p>
             )}
+            {refundRequest.status === RefundStatus.Approved &&
+              refundRequest.refundStatus === RefundPayoutStatus.Pending && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    onClick={() => updatePayout("mark-issued")}
+                    disabled={isSubmitting}
+                  >
+                    Mark Refund Issued
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => updatePayout("mark-failed")}
+                    disabled={isSubmitting}
+                  >
+                    Mark Refund Failed
+                  </Button>
+                </div>
+              )}
           </div>
         )}
       </CardContent>

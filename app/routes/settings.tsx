@@ -6,6 +6,7 @@ import type { Route } from "./+types/settings";
 import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
+import { RefundPayoutBadge } from "~/components/refund-payout-badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
@@ -319,7 +320,13 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                   >
                     {refundRequest.courseTitle}
                   </Link>
-                  <RefundStatusBadge status={refundRequest.status} />
+                  <div className="flex items-center gap-1.5">
+                    <RefundStatusBadge status={refundRequest.status} />
+                    {refundRequest.status === RefundStatus.Approved &&
+                      refundRequest.refundStatus && (
+                        <RefundPayoutBadge status={refundRequest.refundStatus} />
+                      )}
+                  </div>
                 </div>
                 <p className="mt-1 text-sm text-muted-foreground">
                   {formatPrice(refundRequest.amountPaid)} · raised{" "}

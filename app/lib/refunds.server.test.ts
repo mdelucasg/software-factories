@@ -2,7 +2,12 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
-import { LessonProgressStatus, RefundStatus, UserRole } from "~/db/schema";
+import {
+  LessonProgressStatus,
+  RefundPayoutStatus,
+  RefundStatus,
+  UserRole,
+} from "~/db/schema";
 import {
   approveRefundRequest,
   checkRefundRequest,
@@ -13,6 +18,7 @@ import {
   listRefundRequestsForReview,
   listTeamLicences,
   raiseRefundRequest,
+  updateRefundPayoutStatus,
 } from "./refunds.server";
 
 type TestDb = ReturnType<typeof createTestDb>;
@@ -499,6 +505,133 @@ describe("listing Refund Requests", () => {
     expect(listTeamLicences(db, priya.id, NOW)).toMatchObject([
       { seatCount: 2, claimedSeatCount: 1, canRequestRefund: false },
       { seatCount: 2, claimedSeatCount: 0, canRequestRefund: true },
+    ]);
+  });
+});
+
+describe("refund payout status", () => {
+  it("keeps refundStatus null while Open or Declined, and initializes it to pending on approval", () => {
+    const first = buyForSelf(base.user.id);
+    const firstId = raise(first.id, base.user.id);
+
+    const openRow = db
+      .select()
+      .from(schema.refunds)
+      .where(eq(schema.refunds.id, firstId))
+      .get();
+    expect(openRow?.refundStatus).toBeNull();
+
+    const approval = approveRefundRequest(db, firstId, platformAdmin.id, null, NOW);
+    expect(approval.ok).toBe(true);
+
+    const approvedRow = db
+      .select()
+      .from(schema.refunds)
+      .where(eq(schema.refunds.id, firstId))
+      .get();
+    expect(approvedRow?.refundStatus).toBe(RefundPayoutStatus.Pending);
+
+    const ben = addStudent("Ben");
+    const second = buyForSelf(ben.id);
+    const secondId = raise(second.id, ben.id);
+    declineRefundRequest(db, secondId, platformAdmin.id, "Not eligible.", NOW);
+
+    const declinedRow = db
+      .select()
+      .from(schema.refunds)
+      .where(eq(schema.refunds.id, secondId))
+      .get();
+    expect(declinedRow?.refundStatus).toBeNull();
+  });
+
+  it("transitions an Approved refund from pending to issued or failed and rejects invalid transitions", () => {
+    const first = buyForSelf(base.user.id);
+    const firstId = raise(first.id, base.user.id);
+
+    // Cannot transition while Open
+    expect(
+      updateRefundPayoutStatus(db, firstId, RefundPayoutStatus.Issued)
+    ).toMatchObject({ ok: false, status: 409 });
+
+    approveRefundRequest(db, firstId, platformAdmin.id, null, NOW);
+
+    const issued = updateRefundPayoutStatus(
+      db,
+      firstId,
+      RefundPayoutStatus.Issued
+    );
+    expect(issued).toEqual({
+      ok: true,
+      refundStatus: RefundPayoutStatus.Issued,
+    });
+
+    // Cannot transition again once Issued
+    expect(
+      updateRefundPayoutStatus(db, firstId, RefundPayoutStatus.Failed)
+    ).toMatchObject({ ok: false, status: 409 });
+
+    const ben = addStudent("Ben");
+    const second = buyForSelf(ben.id);
+    const secondId = raise(second.id, ben.id);
+    approveRefundRequest(db, secondId, platformAdmin.id, null, NOW);
+
+    const failed = updateRefundPayoutStatus(
+      db,
+      secondId,
+      RefundPayoutStatus.Failed
+    );
+    expect(failed).toEqual({
+      ok: true,
+      refundStatus: RefundPayoutStatus.Failed,
+    });
+
+    const failedRow = db
+      .select()
+      .from(schema.refunds)
+      .where(eq(schema.refunds.id, secondId))
+      .get();
+    expect(failedRow?.status).toBe(RefundStatus.Approved);
+    expect(failedRow?.refundStatus).toBe(RefundPayoutStatus.Failed);
+
+    // Cannot transition again once Failed
+    expect(
+      updateRefundPayoutStatus(db, secondId, RefundPayoutStatus.Issued)
+    ).toMatchObject({ ok: false, status: 409 });
+
+    // Missing request
+    expect(
+      updateRefundPayoutStatus(db, 99999, RefundPayoutStatus.Issued)
+    ).toMatchObject({ ok: false, status: 404 });
+  });
+
+  it("surfaces refundStatus in admin review, buyer, and team licence listings", () => {
+    const first = buyForSelf(base.user.id);
+    const firstId = raise(first.id, base.user.id);
+    approveRefundRequest(db, firstId, platformAdmin.id, null, NOW);
+    updateRefundPayoutStatus(db, firstId, RefundPayoutStatus.Issued);
+
+    expect(
+      listRefundRequestsForReview(db, RefundStatus.Approved, NOW)
+    ).toMatchObject([
+      { id: firstId, refundStatus: RefundPayoutStatus.Issued },
+    ]);
+    expect(listRefundRequestsForBuyer(db, base.user.id)).toMatchObject([
+      { id: firstId, refundStatus: RefundPayoutStatus.Issued },
+    ]);
+
+    const priya = addStudent("Priya");
+    const { purchase } = buySeats(priya.id, 2);
+    const teamReqId = raise(purchase.id, priya.id);
+    approveRefundRequest(db, teamReqId, platformAdmin.id, null, NOW);
+
+    expect(listTeamLicences(db, priya.id, NOW)).toMatchObject([
+      {
+        purchaseId: purchase.id,
+        latestRefundRequest: {
+          status: RefundStatus.Approved,
+          refundStatus: RefundPayoutStatus.Pending,
+        },
+      },
     ]);
   });
 });

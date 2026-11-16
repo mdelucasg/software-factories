@@ -37,6 +37,12 @@ export enum RefundStatus {
   Declined = "declined",
 }
 
+export enum RefundPayoutStatus {
+  Pending = "pending",
+  Issued = "issued",
+  Failed = "failed",
+}
+
 export enum TeamMemberRole {
   Admin = "admin",
   Member = "member",
@@ -246,6 +252,9 @@ export const refunds = sqliteTable(
       .notNull()
       .$type<RefundStatus>()
       .default(RefundStatus.Open),
+    // Null while the Refund Request is Open or Declined; initialized to
+    // "pending" when Approved and transitioned to "issued" or "failed".
+    refundStatus: text("refund_status").$type<RefundPayoutStatus>(),
     // The Buyer's own words, in the box on the course or team page.
     reason: text("reason").notNull(),
     // Null until someone approves — a declined request refunds nothing.

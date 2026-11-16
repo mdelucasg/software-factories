@@ -14,6 +14,7 @@ import {
   users,
   videoWatchEvents,
   LessonProgressStatus,
+  RefundPayoutStatus,
   RefundStatus,
 } from "~/db/schema";
 import { formatPrice } from "~/lib/utils";
@@ -417,6 +418,7 @@ function selectRefundRequests(db: Queryable) {
     .select({
       id: refunds.id,
       status: refunds.status,
+      refundStatus: refunds.refundStatus,
       reason: refunds.reason,
       decisionNote: refunds.decisionNote,
       requestedAt: refunds.requestedAt,
@@ -438,6 +440,7 @@ function selectRefundRequests(db: Queryable) {
 export type RefundRequestForReview = {
   id: number;
   status: RefundStatus;
+  refundStatus: RefundPayoutStatus | null;
   reason: string;
   decisionNote: string | null;
   requestedAt: string;
@@ -483,6 +486,7 @@ export function listRefundRequestsForReview(
     return {
       id: row.id,
       status: row.status,
+      refundStatus: row.refundStatus,
       reason: row.reason,
       decisionNote: row.decisionNote,
       requestedAt: row.requestedAt,
@@ -514,6 +518,7 @@ export function listRefundRequestsForBuyer(db: Queryable, buyerId: number) {
     .map((row) => ({
       id: row.id,
       status: row.status,
+      refundStatus: row.refundStatus,
       reason: row.reason,
       decisionNote: row.decisionNote,
       requestedAt: row.requestedAt,
@@ -543,7 +548,11 @@ export function listTeamLicences(db: Queryable, buyerId: number, now: Date) {
     if (kindOf(seats) !== "team_licence") return [];
 
     const latestRefundRequest = db
-      .select({ status: refunds.status, decisionNote: refunds.decisionNote })
+      .select({
+        status: refunds.status,
+        refundStatus: refunds.refundStatus,
+        decisionNote: refunds.decisionNote,
+      })
       .from(refunds)
       .where(eq(refunds.purchaseId, purchase.id))
       .orderBy(desc(refunds.requestedAt), desc(refunds.id))
@@ -669,6 +678,7 @@ export function approveRefundRequest(
     tx.update(refunds)
       .set({
         status: RefundStatus.Approved,
+        refundStatus: RefundPayoutStatus.Pending,
         amountRefunded: purchase.amountPaid,
         decisionNote: note,
         resolvedAt: now.toISOString(),
@@ -729,6 +739,58 @@ export function declineRefundRequest(
         trimmedNote
       ),
     };
+  });
+}
+
+export type UpdateRefundPayoutStatusResult =
+  | {
+      ok: true;
+      refundStatus: RefundPayoutStatus.Issued | RefundPayoutStatus.Failed;
+    }
+  | Failure;
+
+/**
+ * Transitions an Approved Refund Request's payout status from Pending to Issued
+ * or Failed. Rejects requests that are not Approved or already finalized.
+ */
+export function updateRefundPayoutStatus(
+  db: Db,
+  refundRequestId: number,
+  nextStatus: RefundPayoutStatus.Issued | RefundPayoutStatus.Failed
+): UpdateRefundPayoutStatusResult {
+  return db.transaction((tx): UpdateRefundPayoutStatusResult => {
+    const refundRequest = tx
+      .select()
+      .from(refunds)
+      .where(eq(refunds.id, refundRequestId))
+      .get();
+
+    if (!refundRequest) {
+      return { ok: false, status: 404, error: "Refund request not found." };
+    }
+
+    if (refundRequest.status !== RefundStatus.Approved) {
+      return {
+        ok: false,
+        status: 409,
+        error: "Only approved refund requests have a refund status to update.",
+      };
+    }
+
+    if (refundRequest.refundStatus !== RefundPayoutStatus.Pending) {
+      return {
+        ok: false,
+        status: 409,
+        error: `This refund was already marked as ${refundRequest.refundStatus}.`,
+      };
+    }
+
+    tx.update(refunds)
+      .set({ refundStatus: nextStatus })
+      .where(eq(refunds.id, refundRequestId))
+      .run();
+
+    return { ok: true, refundStatus: nextStatus };
   });
 }
 

@@ -4,13 +4,18 @@ import { and, eq, isNull } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import {
   PurchaseDigestFrequency,
+  UserRole,
   comments,
+  coupons,
   courses,
   lessons,
   modules,
   notificationPreferences,
+  purchases,
+  refunds,
   users,
 } from "~/db/schema";
+import { formatPrice } from "~/lib/utils";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
@@ -573,4 +578,335 @@ export async function notifyCommentPosted(
       createdAt: postedComment.createdAt,
     },
   });
+}
+
+interface RefundNotificationContext {
+  refundRequestId: number;
+  reason: string;
+  amountPaid: number;
+  amountRefunded: number;
+  decisionNote: string | null;
+  requestedAt: string;
+  resolvedAt: string | null;
+  courseId: number;
+  courseTitle: string;
+  courseSlug: string;
+  instructorId: number;
+  buyer: NotificationRecipient;
+  purchaseKind: "individual_purchase" | "team_licence";
+  buyerDeepLink: "/settings" | "/team";
+}
+
+function loadRefundNotificationContext(
+  db: Db,
+  refundRequestId: number
+): RefundNotificationContext | null {
+  const row = db
+    .select({
+      refundRequestId: refunds.id,
+      reason: refunds.reason,
+      amountRefunded: refunds.amountRefunded,
+      decisionNote: refunds.decisionNote,
+      requestedAt: refunds.requestedAt,
+      resolvedAt: refunds.resolvedAt,
+      purchaseId: purchases.id,
+      amountPaid: purchases.amountPaid,
+      courseId: courses.id,
+      courseTitle: courses.title,
+      courseSlug: courses.slug,
+      instructorId: courses.instructorId,
+      buyerId: users.id,
+      buyerName: users.name,
+      buyerEmail: users.email,
+    })
+    .from(refunds)
+    .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .innerJoin(users, eq(purchases.userId, users.id))
+    .where(eq(refunds.id, refundRequestId))
+    .get();
+
+  if (!row) {
+    return null;
+  }
+
+  const hasSeats = Boolean(
+    db
+      .select({ id: coupons.id })
+      .from(coupons)
+      .where(eq(coupons.purchaseId, row.purchaseId))
+      .get()
+  );
+  const purchaseKind = hasSeats ? "team_licence" : "individual_purchase";
+
+  return {
+    refundRequestId: row.refundRequestId,
+    reason: row.reason,
+    amountPaid: row.amountPaid,
+    amountRefunded: row.amountRefunded ?? row.amountPaid,
+    decisionNote: row.decisionNote,
+    requestedAt: row.requestedAt,
+    resolvedAt: row.resolvedAt,
+    courseId: row.courseId,
+    courseTitle: row.courseTitle,
+    courseSlug: row.courseSlug,
+    instructorId: row.instructorId,
+    buyer: {
+      id: String(row.buyerId),
+      name: row.buyerName,
+      email: row.buyerEmail,
+    },
+    purchaseKind,
+    buyerDeepLink: purchaseKind === "team_licence" ? "/team" : "/settings",
+  };
+}
+
+function listPlatformAdminRecipients(db: Db): NotificationRecipient[] {
+  return db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.role, UserRole.Admin))
+    .all()
+    .map(toNotificationRecipient);
+}
+
+/**
+ * Emits `refund-request-opened` to the Buyer and all Platform Admins when a
+ * Refund Request is created in Open state. Instructors are not notified.
+ */
+export async function notifyRefundRequestOpened(
+  db: Db,
+  params: { refundRequestId: number },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const ctx = loadRefundNotificationContext(db, params.refundRequestId);
+  if (!ctx) return;
+
+  const purchaseLabel =
+    ctx.purchaseKind === "team_licence"
+      ? "Team Licence"
+      : "Individual Purchase";
+  const formattedAmount = formatPrice(ctx.amountPaid);
+  const sharedData = {
+    kind: "transactional" as const,
+    subkind: "refund_open" as const,
+    badgeLabel: "Refund Request",
+    courseTitle: ctx.courseTitle,
+    courseSlug: ctx.courseSlug,
+    purchaseKind: ctx.purchaseKind,
+    amountPaid: ctx.amountPaid,
+    reason: ctx.reason,
+    refundRequestId: ctx.refundRequestId,
+    createdAt: ctx.requestedAt,
+  };
+
+  await adapter.triggerWorkflow({
+    workflow: "refund-request-opened",
+    recipients: [ctx.buyer],
+    actor: ctx.buyer,
+    data: {
+      ...sharedData,
+      title: `Refund request received for "${ctx.courseTitle}"`,
+      body: `We received your ${purchaseLabel} refund request (${formattedAmount}): "${ctx.reason}"`,
+      meta: `${purchaseLabel} · ${formattedAmount}`,
+      deepLink: ctx.buyerDeepLink,
+      ctaLabel: "View Request",
+    },
+  });
+
+  const admins = listPlatformAdminRecipients(db);
+  if (admins.length > 0) {
+    await adapter.triggerWorkflow({
+      workflow: "refund-request-opened",
+      recipients: admins,
+      actor: ctx.buyer,
+      data: {
+        ...sharedData,
+        title: `New refund request from ${ctx.buyer.name} for "${ctx.courseTitle}"`,
+        body: `${purchaseLabel} (${formattedAmount}) — "${ctx.reason}"`,
+        meta: `${ctx.buyer.name} · ${purchaseLabel} · ${formattedAmount}`,
+        deepLink: "/admin/refunds?status=open",
+        ctaLabel: "Review Request",
+      },
+    });
+  }
+}
+
+/**
+ * Emits `refund-request-approved` (unified with initial Pending Refund state)
+ * to the Buyer and Course Instructor, or `refund-request-declined` exclusively
+ * to the Buyer with the required decisionNote.
+ */
+export async function notifyRefundRequestDecided(
+  db: Db,
+  params: { refundRequestId: number; decision: "approved" | "declined" },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const ctx = loadRefundNotificationContext(db, params.refundRequestId);
+  if (!ctx) return;
+
+  const formattedAmount = formatPrice(ctx.amountRefunded);
+
+  if (params.decision === "approved") {
+    const noteSuffix = ctx.decisionNote ? ` Note: "${ctx.decisionNote}"` : "";
+
+    await adapter.triggerWorkflow({
+      workflow: "refund-request-approved",
+      recipients: [ctx.buyer],
+      data: {
+        kind: "transactional",
+        subkind: "refund_approved",
+        badgeLabel: "Refund Approved",
+        title: `Refund approved for "${ctx.courseTitle}"`,
+        body: `Your refund of ${formattedAmount} is approved and currently pending payout.${noteSuffix}`,
+        meta: `Refund status: Pending · ${formattedAmount}`,
+        deepLink: ctx.buyerDeepLink,
+        ctaLabel: "View Status",
+        courseTitle: ctx.courseTitle,
+        purchaseKind: ctx.purchaseKind,
+        amountRefunded: ctx.amountRefunded,
+        refundStatus: "pending",
+        decisionNote: ctx.decisionNote,
+        refundRequestId: ctx.refundRequestId,
+        createdAt: ctx.resolvedAt ?? new Date().toISOString(),
+      },
+    });
+
+    const instructor = db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, ctx.instructorId))
+      .get();
+
+    if (instructor) {
+      await adapter.triggerWorkflow({
+        workflow: "refund-request-approved",
+        recipients: [toNotificationRecipient(instructor)],
+        data: {
+          kind: "transactional",
+          subkind: "refund_approved",
+          badgeLabel: "Refund Approved",
+          title: `Refund approved for "${ctx.courseTitle}"`,
+          body: `${ctx.buyer.name}'s ${ctx.purchaseKind === "team_licence" ? "Team Licence" : "Individual Purchase"} (${formattedAmount}) was refunded.`,
+          meta: `${ctx.buyer.name} · ${formattedAmount}`,
+          deepLink: `/instructor/${ctx.courseId}/students`,
+          ctaLabel: "View Students",
+          courseTitle: ctx.courseTitle,
+          purchaseKind: ctx.purchaseKind,
+          amountRefunded: ctx.amountRefunded,
+          refundRequestId: ctx.refundRequestId,
+          createdAt: ctx.resolvedAt ?? new Date().toISOString(),
+        },
+      });
+    }
+    return;
+  }
+
+  const decisionNote = ctx.decisionNote ?? "";
+  await adapter.triggerWorkflow({
+    workflow: "refund-request-declined",
+    recipients: [ctx.buyer],
+    data: {
+      kind: "transactional",
+      subkind: "refund_declined",
+      badgeLabel: "Refund Declined",
+      title: `Refund request declined for "${ctx.courseTitle}"`,
+      body: decisionNote,
+      meta: `Course: ${ctx.courseTitle}`,
+      deepLink: ctx.buyerDeepLink,
+      ctaLabel: "View Details",
+      courseTitle: ctx.courseTitle,
+      purchaseKind: ctx.purchaseKind,
+      decisionNote,
+      refundRequestId: ctx.refundRequestId,
+      createdAt: ctx.resolvedAt ?? new Date().toISOString(),
+    },
+  });
+}
+
+/**
+ * Emits `refund-issued` to the Buyer or `refund-failed` to the Buyer and all
+ * Platform Admins when an Approved Refund transitions from Pending.
+ */
+export async function notifyRefundStatusChanged(
+  db: Db,
+  params: { refundRequestId: number; refundStatus: "issued" | "failed" },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const ctx = loadRefundNotificationContext(db, params.refundRequestId);
+  if (!ctx) return;
+
+  const formattedAmount = formatPrice(ctx.amountRefunded);
+  const nowIso = new Date().toISOString();
+
+  if (params.refundStatus === "issued") {
+    await adapter.triggerWorkflow({
+      workflow: "refund-issued",
+      recipients: [ctx.buyer],
+      data: {
+        kind: "transactional",
+        subkind: "refund_issued",
+        badgeLabel: "Refund Issued",
+        title: `Refund of ${formattedAmount} issued for "${ctx.courseTitle}"`,
+        body: `Your refund of ${formattedAmount} has been issued.`,
+        meta: `Refund status: Issued · ${formattedAmount}`,
+        deepLink: ctx.buyerDeepLink,
+        ctaLabel: "View Receipt",
+        courseTitle: ctx.courseTitle,
+        purchaseKind: ctx.purchaseKind,
+        amountRefunded: ctx.amountRefunded,
+        refundStatus: "issued",
+        refundRequestId: ctx.refundRequestId,
+        createdAt: nowIso,
+      },
+    });
+    return;
+  }
+
+  await adapter.triggerWorkflow({
+    workflow: "refund-failed",
+    recipients: [ctx.buyer],
+    data: {
+      kind: "transactional",
+      subkind: "refund_failed",
+      badgeLabel: "Refund Failed",
+      title: `Refund payout failed for "${ctx.courseTitle}"`,
+      body: `We could not complete your refund payout of ${formattedAmount}. Our team has been alerted.`,
+      meta: `Refund status: Failed · ${formattedAmount}`,
+      deepLink: ctx.buyerDeepLink,
+      ctaLabel: "View Status",
+      urgent: true,
+      courseTitle: ctx.courseTitle,
+      purchaseKind: ctx.purchaseKind,
+      amountRefunded: ctx.amountRefunded,
+      refundStatus: "failed",
+      refundRequestId: ctx.refundRequestId,
+      createdAt: nowIso,
+    },
+  });
+
+  const admins = listPlatformAdminRecipients(db);
+  if (admins.length > 0) {
+    await adapter.triggerWorkflow({
+      workflow: "refund-failed",
+      recipients: admins,
+      data: {
+        kind: "transactional",
+        subkind: "refund_failed",
+        badgeLabel: "Refund Failed",
+        title: `Refund payout failed for ${ctx.buyer.name} ("${ctx.courseTitle}")`,
+        body: `Payout of ${formattedAmount} failed and requires attention.`,
+        meta: `${ctx.buyer.name} · ${formattedAmount}`,
+        deepLink: "/admin/refunds?status=approved",
+        ctaLabel: "Review Refund",
+        urgent: true,
+        courseTitle: ctx.courseTitle,
+        purchaseKind: ctx.purchaseKind,
+        amountRefunded: ctx.amountRefunded,
+        refundStatus: "failed",
+        refundRequestId: ctx.refundRequestId,
+        createdAt: nowIso,
+      },
+    });
+  }
 }
