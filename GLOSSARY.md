@@ -27,9 +27,29 @@ _Avoid_: Admin (on its own), the team, Staff
 **Course**:
 A structured collection of video lessons and quizzes created and managed by an Instructor. A Course is **Draft** (being built by the Instructor; not listed in the catalog or open for Purchase), **Published** (listed in the catalog and open for Purchase), or **Archived** (retired from the catalog and closed to new Purchases, while enrolled Students keep access).
 
+**Lesson**:
+One unit of a Course, belonging to a module, with a video, written notes, an optional quiz, and a discussion thread of Comments.
+_Avoid_: Lecture, Chapter, Video
+
+**Comment**:
+A message posted on a Lesson by an enrolled Student, the Course's Instructor, or a Platform Admin. A Comment is either a top-level comment (which appears as an unanswered question for the Instructor until staff replies) or a reply to a top-level comment.
+_Avoid_: Post, Review, Forum thread
+
 **Enrollment**:
 A Student's access to a Course, granted either by an Individual Purchase or by claiming a Seat on a Team Licence. An Enrollment is **Active** while the Student has access to the Course, or **Lapsed** when an approved Refund Request ends their access (while keeping their recorded progress).
 _Avoid_: Subscription, Registration, Place on a course
+
+**Learning Activity**:
+A discrete study action by a Student on an Active Enrollment: opening or completing a Lesson, starting or finishing playback of its video, or submitting a quiz attempt. Any Learning Activity resets the Student's global inactivity window.
+_Avoid_: Engagement, Progress tick, Heartbeat
+
+**Adherence Reminder**:
+A notification sent to a Student with at least one incomplete Active Enrollment after 72 hours without any Learning Activity across all their Courses, inviting them to resume their most recent incomplete Course. At most one Adherence Reminder is sent per inactivity period until the Student logs new Learning Activity.
+_Avoid_: Inactivity alert, Streak notification, Re-engagement email
+
+**Course Recommendation**:
+A one-time notification sent to a Student when a Course becomes Published for the first time and shares its category or Instructor with at least one of the Student's Active Enrollments.
+_Avoid_: Marketing blast, Promo alert, Course announcement
 
 ### Purchases
 
