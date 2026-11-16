@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "efe09b35-2812-485d-9b7e-0119423ff344",
+  "id": "9e4971e4-62f0-47ba-8845-f6752f717c83",
   "prevId": "90bcf6c5-9b61-4ea0-aabb-3a22be57544a",
   "tables": {
     "categories": {
@@ -450,13 +450,6 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
-        },
-        "first_published_at": {
-          "name": "first_published_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
           "autoincrement": false
         },
         "cover_image_url": {
@@ -1354,6 +1347,13 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'open'"
+        },
+        "refund_status": {
+          "name": "refund_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
         },
         "reason": {
           "name": "reason",

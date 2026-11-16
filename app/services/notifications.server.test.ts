@@ -3,6 +3,8 @@ import { createTestDb, seedBaseData } from "~/test/setup";
 import {
   CourseStatus,
   PurchaseDigestFrequency,
+  RefundPayoutStatus,
+  RefundStatus,
   TeamMemberRole,
   UserRole,
   categories,
@@ -13,6 +15,7 @@ import {
   lessons,
   modules,
   purchases,
+  refunds,
   teamMembers,
   teams,
   users,
@@ -23,6 +26,9 @@ import {
   notifyCommentPosted,
   notifyCourseStatusChanged,
   notifyPurchaseCompleted,
+  notifyRefundRequestDecided,
+  notifyRefundRequestOpened,
+  notifyRefundStatusChanged,
   notifySeatClaimed,
   transitionCourseStatus,
   updateNotificationPreferences,
@@ -1208,6 +1214,271 @@ describe("notifications.server", () => {
       );
 
       expect(adapter2.triggered).toHaveLength(0);
+    });
+  });
+
+  describe("refund lifecycle notifications", () => {
+    function createAdmin(name: string, email: string) {
+      return db
+        .insert(users)
+        .values({ name, email, role: UserRole.Admin })
+        .returning()
+        .get();
+    }
+
+    function createIndividualRefundRequest(
+      status: RefundStatus = RefundStatus.Open,
+      options: {
+        refundStatus?: RefundPayoutStatus | null;
+        decisionNote?: string | null;
+      } = {}
+    ) {
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const refundRequest = db
+        .insert(refunds)
+        .values({
+          purchaseId: purchase.id,
+          status,
+          refundStatus: options.refundStatus ?? null,
+          reason: "Bought the wrong course by mistake.",
+          amountRefunded: status === RefundStatus.Approved ? 4900 : null,
+          decisionNote: options.decisionNote ?? null,
+        })
+        .returning()
+        .get();
+
+      return { purchase, refundRequest };
+    }
+
+    function createTeamRefundRequest() {
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 19900,
+          country: "US",
+        })
+        .returning()
+        .get();
+      const team = db.insert(teams).values({}).returning().get();
+      db.insert(coupons)
+        .values([
+          {
+            teamId: team.id,
+            courseId: base.course.id,
+            code: "SEAT-1",
+            purchaseId: purchase.id,
+          },
+          {
+            teamId: team.id,
+            courseId: base.course.id,
+            code: "SEAT-2",
+            purchaseId: purchase.id,
+          },
+        ])
+        .run();
+
+      const refundRequest = db
+        .insert(refunds)
+        .values({
+          purchaseId: purchase.id,
+          status: RefundStatus.Open,
+          reason: "Team no longer needs these seats.",
+        })
+        .returning()
+        .get();
+
+      return { purchase, refundRequest };
+    }
+
+    it("emits refund-request-opened to Buyer and all Platform Admins without notifying the Instructor", async () => {
+      const admin1 = createAdmin("Admin One", "admin1@example.com");
+      const admin2 = createAdmin("Admin Two", "admin2@example.com");
+      const { refundRequest } = createIndividualRefundRequest();
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyRefundRequestOpened(
+        db,
+        { refundRequestId: refundRequest.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(2);
+
+      const buyerTrigger = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.user.id))
+      );
+      expect(buyerTrigger?.workflow).toBe("refund-request-opened");
+      expect(buyerTrigger?.data).toMatchObject({
+        subkind: "refund_open",
+        deepLink: "/settings",
+        courseTitle: base.course.title,
+        purchaseKind: "individual_purchase",
+        amountPaid: 4900,
+        reason: "Bought the wrong course by mistake.",
+      });
+
+      const adminTrigger = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(admin1.id))
+      );
+      expect(adminTrigger?.workflow).toBe("refund-request-opened");
+      expect(adminTrigger?.recipients.map((r) => r.id).sort()).toEqual(
+        [String(admin1.id), String(admin2.id)].sort()
+      );
+      expect(adminTrigger?.data.deepLink).toBe("/admin/refunds?status=open");
+
+      const instructorFeed = await adapter.listFeed(String(base.instructor.id));
+      expect(instructorFeed).toHaveLength(0);
+    });
+
+    it("routes Team Licence refund-request-opened deepLink to /team for the Buyer", async () => {
+      createAdmin("Admin One", "admin1@example.com");
+      const { refundRequest } = createTeamRefundRequest();
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyRefundRequestOpened(
+        db,
+        { refundRequestId: refundRequest.id },
+        adapter
+      );
+
+      const buyerTrigger = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.user.id))
+      );
+      expect(buyerTrigger?.data).toMatchObject({
+        deepLink: "/team",
+        purchaseKind: "team_licence",
+      });
+    });
+
+    it("emits unified refund-request-approved to Buyer and Instructor", async () => {
+      const { refundRequest } = createIndividualRefundRequest(
+        RefundStatus.Approved,
+        {
+          refundStatus: RefundPayoutStatus.Pending,
+          decisionNote: "Approved as a one-time courtesy.",
+        }
+      );
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyRefundRequestDecided(
+        db,
+        { refundRequestId: refundRequest.id, decision: "approved" },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(2);
+
+      const buyerTrigger = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.user.id))
+      );
+      expect(buyerTrigger?.workflow).toBe("refund-request-approved");
+      expect(buyerTrigger?.data).toMatchObject({
+        subkind: "refund_approved",
+        deepLink: "/settings",
+        refundStatus: RefundPayoutStatus.Pending,
+        decisionNote: "Approved as a one-time courtesy.",
+        amountRefunded: 4900,
+      });
+
+      const instructorTrigger = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.instructor.id))
+      );
+      expect(instructorTrigger?.workflow).toBe("refund-request-approved");
+      expect(instructorTrigger?.data.deepLink).toBe(
+        `/instructor/${base.course.id}/students`
+      );
+    });
+
+    it("emits refund-request-declined exclusively to Buyer with decisionNote", async () => {
+      const { refundRequest } = createIndividualRefundRequest(
+        RefundStatus.Declined,
+        { decisionNote: "More than half the course was completed." }
+      );
+      const adapter = new InMemoryNotificationAdapter();
+
+      await notifyRefundRequestDecided(
+        db,
+        { refundRequestId: refundRequest.id, decision: "declined" },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(1);
+      expect(adapter.triggered[0].workflow).toBe("refund-request-declined");
+      expect(adapter.triggered[0].recipients.map((r) => r.id)).toEqual([
+        String(base.user.id),
+      ]);
+      expect(adapter.triggered[0].data).toMatchObject({
+        subkind: "refund_declined",
+        deepLink: "/settings",
+        decisionNote: "More than half the course was completed.",
+      });
+      expect(await adapter.listFeed(String(base.instructor.id))).toHaveLength(0);
+    });
+
+    it("emits refund-issued to Buyer and refund-failed to Buyer and all Platform Admins", async () => {
+      const admin1 = createAdmin("Admin One", "admin1@example.com");
+      const { refundRequest } = createIndividualRefundRequest(
+        RefundStatus.Approved,
+        { refundStatus: RefundPayoutStatus.Issued }
+      );
+      const issuedAdapter = new InMemoryNotificationAdapter();
+
+      await notifyRefundStatusChanged(
+        db,
+        { refundRequestId: refundRequest.id, refundStatus: "issued" },
+        issuedAdapter
+      );
+
+      expect(issuedAdapter.triggered).toHaveLength(1);
+      expect(issuedAdapter.triggered[0].workflow).toBe("refund-issued");
+      expect(issuedAdapter.triggered[0].recipients.map((r) => r.id)).toEqual([
+        String(base.user.id),
+      ]);
+      expect(issuedAdapter.triggered[0].data).toMatchObject({
+        subkind: "refund_issued",
+        deepLink: "/settings",
+        amountRefunded: 4900,
+      });
+
+      const failedAdapter = new InMemoryNotificationAdapter();
+      await notifyRefundStatusChanged(
+        db,
+        { refundRequestId: refundRequest.id, refundStatus: "failed" },
+        failedAdapter
+      );
+
+      expect(failedAdapter.triggered).toHaveLength(2);
+      const buyerTrigger = failedAdapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.user.id))
+      );
+      expect(buyerTrigger?.workflow).toBe("refund-failed");
+      expect(buyerTrigger?.data).toMatchObject({
+        subkind: "refund_failed",
+        deepLink: "/settings",
+        urgent: true,
+      });
+
+      const adminTrigger = failedAdapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(admin1.id))
+      );
+      expect(adminTrigger?.workflow).toBe("refund-failed");
+      expect(adminTrigger?.data).toMatchObject({
+        subkind: "refund_failed",
+        deepLink: "/admin/refunds?status=approved",
+        urgent: true,
+      });
     });
   });
 });

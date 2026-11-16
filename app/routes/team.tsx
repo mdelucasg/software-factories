@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { Route } from "./+types/team";
 import { getCurrentUserId } from "~/lib/session";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
+import { RefundPayoutBadge } from "~/components/refund-payout-badge";
 import { Button } from "~/components/ui/button";
 import { Textarea } from "~/components/ui/textarea";
 import { Users, BookOpen, Copy, Check, AlertTriangle } from "lucide-react";
@@ -384,9 +385,14 @@ function TeamLicenceRow({ licence }: { licence: TeamLicence }) {
             </span>
           )}
           {refundRequest?.status === RefundStatus.Approved && (
-            <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
-              Refunded
-            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="rounded-full bg-muted px-2.5 py-0.5 text-xs font-medium text-muted-foreground">
+                Approved
+              </span>
+              {refundRequest.refundStatus && (
+                <RefundPayoutBadge status={refundRequest.refundStatus} />
+              )}
+            </div>
           )}
           {licence.canRequestRefund && !isFormOpen && (
             <Button
