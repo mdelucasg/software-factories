@@ -10,7 +10,12 @@ import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { Textarea } from "~/components/ui/textarea";
-import { UserRole, RefundStatus, users } from "~/db/schema";
+import {
+  PurchaseDigestFrequency,
+  RefundStatus,
+  UserRole,
+  users,
+} from "~/db/schema";
 import { AlertTriangle } from "lucide-react";
 import { data, isRouteErrorResponse, Link } from "react-router";
 import { db } from "~/db";
@@ -27,16 +32,16 @@ const settingsSchema = z.object({
   bio: z.string().trim().optional(),
 });
 
+const booleanStringSchema = z
+  .enum(["true", "false"])
+  .transform((v) => v === "true");
+
 const notificationPrefsSchema = z.object({
   intent: z.literal("update-notifications"),
-  commentsEnabled: z
-    .enum(["true", "false"])
-    .transform((v) => v === "true")
-    .optional(),
-  courseRecommendationsEnabled: z
-    .enum(["true", "false"])
-    .transform((v) => v === "true")
-    .optional(),
+  commentsEnabled: booleanStringSchema.optional(),
+  seatClaimedEnabled: booleanStringSchema.optional(),
+  purchaseDigestFrequency: z.nativeEnum(PurchaseDigestFrequency).optional(),
+  courseRecommendationsEnabled: booleanStringSchema.optional(),
 });
 
 export function meta() {
@@ -105,33 +110,40 @@ export async function action({ request }: Route.ActionArgs) {
     if (!parsedPrefs.success) {
       return data({ errors: parsedPrefs.errors }, { status: 400 });
     }
-    const patch: {
-      commentsEnabled?: boolean;
-      courseRecommendationsEnabled?: boolean;
-    } = {};
-    if (parsedPrefs.data.commentsEnabled !== undefined) {
-      patch.commentsEnabled = parsedPrefs.data.commentsEnabled;
-    }
-    if (parsedPrefs.data.courseRecommendationsEnabled !== undefined) {
-      if (currentUser.role !== UserRole.Student) {
-        return data(
-          {
-            errors: {
-              courseRecommendationsEnabled:
-                "Only students can configure course recommendations.",
-            },
+    if (parsedPrefs.data.courseRecommendationsEnabled !== undefined && currentUser.role !== UserRole.Student) {
+      return data(
+        {
+          errors: {
+            courseRecommendationsEnabled:
+              "Only students can configure course recommendations.",
           },
-          { status: 403 }
-        );
-      }
-      patch.courseRecommendationsEnabled =
-        parsedPrefs.data.courseRecommendationsEnabled;
+        },
+        { status: 403 }
+      );
     }
-    const updated = updateNotificationPreferences(db, currentUser.id, patch);
+    const updated = updateNotificationPreferences(db, currentUser.id, {
+      ...(parsedPrefs.data.commentsEnabled !== undefined
+        ? { commentsEnabled: parsedPrefs.data.commentsEnabled }
+        : {}),
+      ...(parsedPrefs.data.seatClaimedEnabled !== undefined
+        ? { seatClaimedEnabled: parsedPrefs.data.seatClaimedEnabled }
+        : {}),
+      ...(parsedPrefs.data.purchaseDigestFrequency !== undefined
+        ? { purchaseDigestFrequency: parsedPrefs.data.purchaseDigestFrequency }
+        : {}),
+      ...(parsedPrefs.data.courseRecommendationsEnabled !== undefined
+        ? {
+            courseRecommendationsEnabled:
+              parsedPrefs.data.courseRecommendationsEnabled,
+          }
+        : {}),
+    });
     return {
       success: true,
       message: "Notification preferences updated.",
       commentsEnabled: updated.commentsEnabled,
+      seatClaimedEnabled: updated.seatClaimedEnabled,
+      purchaseDigestFrequency: updated.purchaseDigestFrequency,
       courseRecommendationsEnabled: updated.courseRecommendationsEnabled,
     };
   }
@@ -167,30 +179,47 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     success?: boolean;
     message?: string;
     commentsEnabled?: boolean;
+    seatClaimedEnabled?: boolean;
+    purchaseDigestFrequency?: PurchaseDigestFrequency;
     courseRecommendationsEnabled?: boolean;
     errors?: Record<string, string>;
   }>();
   const recFetcher = useFetcher<{
     success?: boolean;
     message?: string;
-    commentsEnabled?: boolean;
     courseRecommendationsEnabled?: boolean;
     errors?: Record<string, string>;
   }>();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
+  const isInstructor = user.role === UserRole.Instructor;
   const canConfigureComments =
-    user.role === UserRole.Student || user.role === UserRole.Instructor;
+    user.role === UserRole.Student || isInstructor;
   const canConfigureCourseRecommendations = user.role === UserRole.Student;
+  const pendingComments = notifFetcher.formData?.get("commentsEnabled");
   const commentsEnabled =
-    notifFetcher.formData !== undefined
-      ? notifFetcher.formData.get("commentsEnabled") === "true"
+    typeof pendingComments === "string"
+      ? pendingComments === "true"
       : (notifFetcher.data?.commentsEnabled ?? notificationPrefs.commentsEnabled);
   const courseRecommendationsEnabled =
     recFetcher.formData !== undefined
       ? recFetcher.formData.get("courseRecommendationsEnabled") === "true"
       : (recFetcher.data?.courseRecommendationsEnabled ??
         notificationPrefs.courseRecommendationsEnabled);
+
+  const pendingSeatClaimed = notifFetcher.formData?.get("seatClaimedEnabled");
+  const seatClaimedEnabled =
+    typeof pendingSeatClaimed === "string"
+      ? pendingSeatClaimed === "true"
+      : (notifFetcher.data?.seatClaimedEnabled ??
+        notificationPrefs.seatClaimedEnabled);
+
+  const pendingDigest = notifFetcher.formData?.get("purchaseDigestFrequency");
+  const purchaseDigestFrequency =
+    typeof pendingDigest === "string"
+      ? pendingDigest
+      : (notifFetcher.data?.purchaseDigestFrequency ??
+        notificationPrefs.purchaseDigestFrequency);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) {
@@ -312,7 +341,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
             </p>
           </CardHeader>
           <CardContent className="space-y-4">
-            <notifFetcher.Form method="post" className="space-y-4">
+            <notifFetcher.Form method="post">
               <input
                 type="hidden"
                 name="intent"
@@ -350,7 +379,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               </div>
             </notifFetcher.Form>
             {canConfigureCourseRecommendations && (
-              <recFetcher.Form method="post" className="space-y-4">
+              <recFetcher.Form method="post">
                 <input
                   type="hidden"
                   name="intent"
@@ -389,6 +418,89 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                   </Button>
                 </div>
               </recFetcher.Form>
+            )}
+
+            {isInstructor && (
+              <>
+                <notifFetcher.Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="update-notifications"
+                  />
+                  <input
+                    type="hidden"
+                    name="seatClaimedEnabled"
+                    value={seatClaimedEnabled ? "false" : "true"}
+                  />
+                  <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                    <div>
+                      <Label
+                        htmlFor="seat-claimed-toggle"
+                        className="text-sm font-medium"
+                      >
+                        Seat claimed notifications
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Receive a notification when a student claims a seat from
+                        a team licence for your course.
+                      </p>
+                    </div>
+                    <Button
+                      id="seat-claimed-toggle"
+                      type="submit"
+                      variant={seatClaimedEnabled ? "default" : "outline"}
+                      size="sm"
+                      role="switch"
+                      aria-checked={seatClaimedEnabled}
+                      disabled={notifFetcher.state !== "idle"}
+                    >
+                      {seatClaimedEnabled ? "Enabled" : "Disabled"}
+                    </Button>
+                  </div>
+                </notifFetcher.Form>
+
+                <notifFetcher.Form method="post">
+                  <input
+                    type="hidden"
+                    name="intent"
+                    value="update-notifications"
+                  />
+                  <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                    <div>
+                      <Label
+                        htmlFor="purchase-digest-frequency"
+                        className="text-sm font-medium"
+                      >
+                        Purchase digest
+                      </Label>
+                      <p className="text-xs text-muted-foreground">
+                        Summary of individual and team licence purchases for
+                        your courses.
+                      </p>
+                    </div>
+                    <select
+                      id="purchase-digest-frequency"
+                      name="purchaseDigestFrequency"
+                      value={purchaseDigestFrequency}
+                      disabled={notifFetcher.state !== "idle"}
+                      onChange={(e) => notifFetcher.submit(e.currentTarget.form)}
+                      className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    >
+                      <option value={PurchaseDigestFrequency.Daily}>
+                        Daily
+                      </option>
+                      <option value={PurchaseDigestFrequency.Weekly}>
+                        Weekly
+                      </option>
+                      <option value={PurchaseDigestFrequency.Monthly}>
+                        Monthly
+                      </option>
+                      <option value={PurchaseDigestFrequency.Off}>Off</option>
+                    </select>
+                  </div>
+                </notifFetcher.Form>
+              </>
             )}
           </CardContent>
         </Card>

@@ -3,13 +3,18 @@ import { createTestDb, seedBaseData } from "~/test/setup";
 import {
   CourseStatus,
   PurchaseDigestFrequency,
+  TeamMemberRole,
   UserRole,
   categories,
   comments,
+  coupons,
   courses,
   enrollments,
   lessons,
   modules,
+  purchases,
+  teamMembers,
+  teams,
   users,
 } from "~/db/schema";
 import {
@@ -17,6 +22,8 @@ import {
   getNotificationPreferences,
   notifyCommentPosted,
   notifyCourseStatusChanged,
+  notifyPurchaseCompleted,
+  notifySeatClaimed,
   transitionCourseStatus,
   updateNotificationPreferences,
 } from "./notifications.server";
@@ -61,6 +68,24 @@ describe("notifications.server", () => {
       });
       expect(reenabled.commentsEnabled).toBe(true);
       expect(getNotificationPreferences(db, base.user.id).commentsEnabled).toBe(true);
+    });
+
+    it("persists updates to seatClaimedEnabled and purchaseDigestFrequency", () => {
+      const updated = updateNotificationPreferences(db, base.instructor.id, {
+        seatClaimedEnabled: false,
+        purchaseDigestFrequency: PurchaseDigestFrequency.Monthly,
+      });
+
+      expect(updated.seatClaimedEnabled).toBe(false);
+      expect(updated.purchaseDigestFrequency).toBe(
+        PurchaseDigestFrequency.Monthly
+      );
+
+      const reloaded = getNotificationPreferences(db, base.instructor.id);
+      expect(reloaded.seatClaimedEnabled).toBe(false);
+      expect(reloaded.purchaseDigestFrequency).toBe(
+        PurchaseDigestFrequency.Monthly
+      );
     });
   });
 
@@ -817,6 +842,372 @@ describe("notifications.server", () => {
           (t) => t.workflow === "course-recommendation"
         )
       ).toHaveLength(0);
+    });
+  });
+
+  describe("notifyPurchaseCompleted", () => {
+    it("emits individual-purchase-completed to the student buyer and instructor-purchase-digest to the instructor", async () => {
+      const adapter = new InMemoryNotificationAdapter();
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      await notifyPurchaseCompleted(db, { purchaseId: purchase.id }, adapter);
+
+      expect(adapter.triggered).toHaveLength(2);
+
+      const studentEvent = adapter.triggered.find(
+        (t) => t.workflow === "individual-purchase-completed"
+      );
+      expect(studentEvent).toBeDefined();
+      expect(studentEvent?.recipients.map((r) => r.id)).toEqual([
+        String(base.user.id),
+      ]);
+      expect(studentEvent?.data).toMatchObject({
+        kind: "transactional",
+        subkind: "individual_purchase",
+        courseTitle: base.course.title,
+        amountPaid: 4900,
+        deepLink: `/courses/${base.course.slug}/welcome`,
+      });
+
+      const digestEvent = adapter.triggered.find(
+        (t) => t.workflow === "instructor-purchase-digest"
+      );
+      expect(digestEvent).toBeDefined();
+      expect(digestEvent?.recipients.map((r) => r.id)).toEqual([
+        String(base.instructor.id),
+      ]);
+      expect(digestEvent?.data).toMatchObject({
+        kind: "transactional",
+        subkind: "purchase_digest",
+        courseTitle: base.course.title,
+        amountPaid: 4900,
+        individualCount: 1,
+        teamLicenceCount: 0,
+        seatCount: 0,
+        digestFrequency: PurchaseDigestFrequency.Daily,
+        deepLink: "/instructor/analytics",
+      });
+
+      const studentFeed = await adapter.listFeed(String(base.user.id));
+      expect(studentFeed).toHaveLength(1);
+      expect(studentFeed[0].kind).toBe("transactional");
+      expect(studentFeed[0].subkind).toBe("individual_purchase");
+      expect(studentFeed[0].deepLink).toBe(`/courses/${base.course.slug}/welcome`);
+    });
+
+    it("emits team-licence-purchased to the team admin buyer and instructor-purchase-digest with seatCount", async () => {
+      const teamAdmin = db
+        .insert(users)
+        .values({
+          name: "Team Admin",
+          email: "teamadmin@test.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      const team = db.insert(teams).values({}).returning().get();
+      db.insert(teamMembers)
+        .values({
+          teamId: team.id,
+          userId: teamAdmin.id,
+          role: TeamMemberRole.Admin,
+        })
+        .run();
+
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: teamAdmin.id,
+          courseId: base.course.id,
+          amountPaid: 14700,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      for (let i = 0; i < 3; i++) {
+        db.insert(coupons)
+          .values({
+            teamId: team.id,
+            courseId: base.course.id,
+            code: `SEAT-${i}`,
+            purchaseId: purchase.id,
+          })
+          .run();
+      }
+
+      const adapter = new InMemoryNotificationAdapter();
+      await notifyPurchaseCompleted(db, { purchaseId: purchase.id }, adapter);
+
+      expect(adapter.triggered).toHaveLength(2);
+
+      const teamEvent = adapter.triggered.find(
+        (t) => t.workflow === "team-licence-purchased"
+      );
+      expect(teamEvent).toBeDefined();
+      expect(teamEvent?.recipients.map((r) => r.id)).toEqual([
+        String(teamAdmin.id),
+      ]);
+      expect(teamEvent?.data).toMatchObject({
+        kind: "transactional",
+        subkind: "team_licence_purchase",
+        courseTitle: base.course.title,
+        amountPaid: 14700,
+        seatCount: 3,
+        deepLink: "/team",
+      });
+
+      const digestEvent = adapter.triggered.find(
+        (t) => t.workflow === "instructor-purchase-digest"
+      );
+      expect(digestEvent).toBeDefined();
+      expect(digestEvent?.data).toMatchObject({
+        individualCount: 0,
+        teamLicenceCount: 1,
+        seatCount: 3,
+        amountPaid: 14700,
+        deepLink: "/instructor/analytics",
+      });
+    });
+
+    it("skips instructor-purchase-digest when purchaseDigestFrequency is off and respects weekly/monthly windows", async () => {
+      updateNotificationPreferences(db, base.instructor.id, {
+        purchaseDigestFrequency: PurchaseDigestFrequency.Off,
+      });
+
+      const p1 = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await notifyPurchaseCompleted(db, { purchaseId: p1.id }, adapter);
+
+      expect(adapter.triggered).toHaveLength(1);
+      expect(adapter.triggered[0].workflow).toBe(
+        "individual-purchase-completed"
+      );
+
+      updateNotificationPreferences(db, base.instructor.id, {
+        purchaseDigestFrequency: PurchaseDigestFrequency.Weekly,
+      });
+
+      const p2 = db
+        .insert(purchases)
+        .values({
+          userId: base.user.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      await notifyPurchaseCompleted(db, { purchaseId: p2.id }, adapter);
+      const weeklyDigest = adapter.triggered.find(
+        (t) => t.workflow === "instructor-purchase-digest"
+      );
+      expect(weeklyDigest?.data).toMatchObject({
+        digestFrequency: PurchaseDigestFrequency.Weekly,
+        window: PurchaseDigestFrequency.Weekly,
+        batchKey: `instructor-purchase-digest:${base.instructor.id}:weekly`,
+      });
+    });
+  });
+
+  describe("notifySeatClaimed", () => {
+    it("notifies the team admin (mandatory) and instructor (when seatClaimedEnabled=true), never notifying the claiming student", async () => {
+      const teamAdmin = db
+        .insert(users)
+        .values({
+          name: "Team Admin",
+          email: "admin@team.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      const team = db.insert(teams).values({}).returning().get();
+      db.insert(teamMembers)
+        .values({
+          teamId: team.id,
+          userId: teamAdmin.id,
+          role: TeamMemberRole.Admin,
+        })
+        .run();
+
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: teamAdmin.id,
+          courseId: base.course.id,
+          amountPaid: 9800,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const claimedCoupon = db
+        .insert(coupons)
+        .values({
+          teamId: team.id,
+          courseId: base.course.id,
+          code: "CLAIM-1",
+          purchaseId: purchase.id,
+          redeemedByUserId: base.user.id,
+          redeemedAt: "2026-10-06T12:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      db.insert(coupons)
+        .values({
+          teamId: team.id,
+          courseId: base.course.id,
+          code: "CLAIM-2",
+          purchaseId: purchase.id,
+        })
+        .run();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await notifySeatClaimed(
+        db,
+        { couponId: claimedCoupon.id, claimedByUserId: base.user.id },
+        adapter
+      );
+
+      expect(adapter.triggered).toHaveLength(2);
+
+      const adminEvent = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(teamAdmin.id))
+      );
+      expect(adminEvent?.workflow).toBe("seat-claimed");
+      expect(adminEvent?.data).toMatchObject({
+        kind: "transactional",
+        subkind: "seat_claimed",
+        courseTitle: base.course.title,
+        studentName: base.user.name,
+        studentEmail: base.user.email,
+        claimedSeatCount: 1,
+        seatCount: 2,
+        deepLink: "/team",
+      });
+
+      const instructorEvent = adapter.triggered.find((t) =>
+        t.recipients.some((r) => r.id === String(base.instructor.id))
+      );
+      expect(instructorEvent?.workflow).toBe("seat-claimed");
+      expect(instructorEvent?.data).toMatchObject({
+        kind: "transactional",
+        subkind: "seat_claimed",
+        courseTitle: base.course.title,
+        studentName: base.user.name,
+        studentEmail: base.user.email,
+        deepLink: `/instructor/${base.course.id}/students`,
+      });
+
+      expect(await adapter.listFeed(String(base.user.id))).toHaveLength(0);
+    });
+
+    it("skips instructor when seatClaimedEnabled is false and excludes the claiming user even if they are the team admin", async () => {
+      updateNotificationPreferences(db, base.instructor.id, {
+        seatClaimedEnabled: false,
+      });
+
+      const teamAdmin = db
+        .insert(users)
+        .values({
+          name: "Self Claiming Admin",
+          email: "selfadmin@team.com",
+          role: UserRole.Student,
+        })
+        .returning()
+        .get();
+
+      const team = db.insert(teams).values({}).returning().get();
+      db.insert(teamMembers)
+        .values({
+          teamId: team.id,
+          userId: teamAdmin.id,
+          role: TeamMemberRole.Admin,
+        })
+        .run();
+
+      const purchase = db
+        .insert(purchases)
+        .values({
+          userId: teamAdmin.id,
+          courseId: base.course.id,
+          amountPaid: 4900,
+          country: "US",
+        })
+        .returning()
+        .get();
+
+      const coupon1 = db
+        .insert(coupons)
+        .values({
+          teamId: team.id,
+          courseId: base.course.id,
+          code: "SELF-1",
+          purchaseId: purchase.id,
+          redeemedByUserId: base.user.id,
+          redeemedAt: "2026-10-06T12:00:00.000Z",
+        })
+        .returning()
+        .get();
+
+      const adapter = new InMemoryNotificationAdapter();
+      await notifySeatClaimed(
+        db,
+        { couponId: coupon1.id, claimedByUserId: base.user.id },
+        adapter
+      );
+
+      // Only Team Admin notified; instructor opted out, claiming student excluded
+      expect(adapter.triggered).toHaveLength(1);
+      expect(adapter.triggered[0].recipients.map((r) => r.id)).toEqual([
+        String(teamAdmin.id),
+      ]);
+
+      // Now if teamAdmin claims a seat themselves, they must not be notified either
+      const coupon2 = db
+        .insert(coupons)
+        .values({
+          teamId: team.id,
+          courseId: base.course.id,
+          code: "SELF-2",
+          purchaseId: purchase.id,
+          redeemedByUserId: teamAdmin.id,
+          redeemedAt: "2026-10-06T12:05:00.000Z",
+        })
+        .returning()
+        .get();
+
+      const adapter2 = new InMemoryNotificationAdapter();
+      await notifySeatClaimed(
+        db,
+        { couponId: coupon2.id, claimedByUserId: teamAdmin.id },
+        adapter2
+      );
+
+      expect(adapter2.triggered).toHaveLength(0);
     });
   });
 });

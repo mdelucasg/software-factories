@@ -5,16 +5,21 @@ import * as schema from "~/db/schema";
 import {
   CourseStatus,
   PurchaseDigestFrequency,
+  TeamMemberRole,
   UserRole,
   categories,
   comments,
+  coupons,
   courses,
   enrollments,
   lessons,
   modules,
   notificationPreferences,
+  purchases,
+  teamMembers,
   users,
 } from "~/db/schema";
+import { formatPrice } from "~/lib/utils";
 
 export type Db = BetterSQLite3Database<typeof schema>;
 
@@ -882,4 +887,307 @@ export async function transitionCourseStatus(
   }
 
   return updated;
+}
+
+/**
+ * Emits purchase notifications (`individual-purchase-completed` or `team-licence-purchased`)
+ * to the buyer and `instructor-purchase-digest` to the course instructor when enabled.
+ */
+export async function notifyPurchaseCompleted(
+  db: Db,
+  params: { purchaseId: number },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const purchase = db
+    .select()
+    .from(purchases)
+    .where(eq(purchases.id, params.purchaseId))
+    .get();
+
+  if (!purchase) {
+    return;
+  }
+
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, purchase.courseId))
+    .get();
+
+  if (!course) {
+    return;
+  }
+
+  const buyer = db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, purchase.userId))
+    .get();
+
+  if (!buyer) {
+    return;
+  }
+
+  const purchaseCoupons = db
+    .select({ id: coupons.id })
+    .from(coupons)
+    .where(eq(coupons.purchaseId, purchase.id))
+    .all();
+
+  const seatCount = purchaseCoupons.length;
+  const isTeamLicence = seatCount > 0;
+  const formattedPrice = formatPrice(purchase.amountPaid);
+
+  if (isTeamLicence) {
+    await adapter.triggerWorkflow({
+      workflow: "team-licence-purchased",
+      recipients: [toNotificationRecipient(buyer)],
+      actor: toNotificationRecipient(buyer),
+      data: {
+        kind: "transactional",
+        subkind: "team_licence_purchase",
+        badgeLabel: "Team Licence",
+        title: `Team Licence purchased for "${course.title}"`,
+        body: `${seatCount} seats for ${course.title} (${formattedPrice})`,
+        meta: `Course: ${course.title} · ${seatCount} seats`,
+        deepLink: "/team",
+        ctaLabel: "Manage Team",
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        amountPaid: purchase.amountPaid,
+        seatCount,
+        purchaseId: purchase.id,
+        createdAt: purchase.createdAt,
+      },
+    });
+  } else {
+    await adapter.triggerWorkflow({
+      workflow: "individual-purchase-completed",
+      recipients: [toNotificationRecipient(buyer)],
+      actor: toNotificationRecipient(buyer),
+      data: {
+        kind: "transactional",
+        subkind: "individual_purchase",
+        badgeLabel: "Purchase",
+        title: `Welcome to "${course.title}"`,
+        body: `Purchase confirmed for ${course.title} (${formattedPrice})`,
+        meta: `Course: ${course.title} · ${formattedPrice}`,
+        deepLink: `/courses/${course.slug}/welcome`,
+        ctaLabel: "Go to Course",
+        courseId: course.id,
+        courseTitle: course.title,
+        courseSlug: course.slug,
+        amountPaid: purchase.amountPaid,
+        purchaseId: purchase.id,
+        createdAt: purchase.createdAt,
+      },
+    });
+  }
+
+  const instructorPrefs = getNotificationPreferences(db, course.instructorId);
+  if (instructorPrefs.purchaseDigestFrequency === PurchaseDigestFrequency.Off) {
+    return;
+  }
+
+  const instructor = db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, course.instructorId))
+    .get();
+
+  if (!instructor) {
+    return;
+  }
+
+  const digestFrequency = instructorPrefs.purchaseDigestFrequency;
+  const purchaseType = isTeamLicence ? "team_licence" : "individual";
+
+  await adapter.triggerWorkflow({
+    workflow: "instructor-purchase-digest",
+    recipients: [toNotificationRecipient(instructor)],
+    actor: toNotificationRecipient(buyer),
+    data: {
+      kind: "transactional",
+      subkind: "purchase_digest",
+      badgeLabel: "Purchase Digest",
+      title: `New ${isTeamLicence ? "Team Licence" : "Individual Purchase"}: "${course.title}"`,
+      body: isTeamLicence
+        ? `${seatCount} seats · ${formattedPrice}`
+        : `${formattedPrice}`,
+      meta: `Digest (${digestFrequency}) · ${course.title}`,
+      deepLink: "/instructor/analytics",
+      ctaLabel: "View Analytics",
+      batchKey: `instructor-purchase-digest:${instructor.id}:${digestFrequency}`,
+      instructorId: instructor.id,
+      digestFrequency,
+      window: digestFrequency,
+      purchaseType,
+      individualCount: isTeamLicence ? 0 : 1,
+      teamLicenceCount: isTeamLicence ? 1 : 0,
+      seatCount,
+      amountPaid: purchase.amountPaid,
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      purchaseId: purchase.id,
+      createdAt: purchase.createdAt,
+    },
+  });
+}
+
+/**
+ * Emits `seat-claimed` notifications when a Student redeems a Team Licence Seat:
+ * - Mandatorily to the Team Admin (unless they are the claiming student)
+ * - To the Course Instructor if `seatClaimedEnabled === true` (unless they are the claiming student)
+ */
+export async function notifySeatClaimed(
+  db: Db,
+  params: { couponId: number; claimedByUserId: number },
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const coupon = db
+    .select()
+    .from(coupons)
+    .where(eq(coupons.id, params.couponId))
+    .get();
+
+  if (!coupon) {
+    return;
+  }
+
+  const course = db
+    .select()
+    .from(courses)
+    .where(eq(courses.id, coupon.courseId))
+    .get();
+
+  if (!course) {
+    return;
+  }
+
+  const claimingStudent = db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, params.claimedByUserId))
+    .get();
+
+  if (!claimingStudent) {
+    return;
+  }
+
+  const licenceSeats = db
+    .select({
+      id: coupons.id,
+      redeemedByUserId: coupons.redeemedByUserId,
+    })
+    .from(coupons)
+    .where(
+      and(eq(coupons.purchaseId, coupon.purchaseId), isNull(coupons.refundedAt))
+    )
+    .all();
+
+  const seatCount = licenceSeats.length;
+  const claimedSeatCount = licenceSeats.filter(
+    (s) => s.redeemedByUserId !== null
+  ).length;
+  const createdAt = coupon.redeemedAt ?? new Date().toISOString();
+
+  const teamAdminMember = db
+    .select({ userId: teamMembers.userId })
+    .from(teamMembers)
+    .where(
+      and(
+        eq(teamMembers.teamId, coupon.teamId),
+        eq(teamMembers.role, TeamMemberRole.Admin)
+      )
+    )
+    .get();
+
+  const purchase = db
+    .select({ userId: purchases.userId })
+    .from(purchases)
+    .where(eq(purchases.id, coupon.purchaseId))
+    .get();
+
+  const teamAdminId = teamAdminMember?.userId ?? purchase?.userId;
+
+  if (teamAdminId !== undefined && teamAdminId !== params.claimedByUserId) {
+    const teamAdmin = db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, teamAdminId))
+      .get();
+
+    if (teamAdmin) {
+      await adapter.triggerWorkflow({
+        workflow: "seat-claimed",
+        recipients: [toNotificationRecipient(teamAdmin)],
+        actor: toNotificationRecipient(claimingStudent),
+        data: {
+          kind: "transactional",
+          subkind: "seat_claimed",
+          badgeLabel: "Seat Claimed",
+          title: `${claimingStudent.name} claimed a seat for "${course.title}"`,
+          body: `${claimingStudent.name} (${claimingStudent.email}) · ${claimedSeatCount}/${seatCount} seats claimed`,
+          meta: `Course: ${course.title} · ${claimedSeatCount}/${seatCount} seats`,
+          deepLink: "/team",
+          ctaLabel: "View Team",
+          courseId: course.id,
+          courseTitle: course.title,
+          courseSlug: course.slug,
+          studentName: claimingStudent.name,
+          studentEmail: claimingStudent.email,
+          claimedSeatCount,
+          seatCount,
+          couponId: coupon.id,
+          createdAt,
+        },
+      });
+    }
+  }
+
+  if (course.instructorId === params.claimedByUserId) {
+    return;
+  }
+
+  const instructorPrefs = getNotificationPreferences(db, course.instructorId);
+  if (!instructorPrefs.seatClaimedEnabled) {
+    return;
+  }
+
+  const instructor = db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, course.instructorId))
+    .get();
+
+  if (!instructor) {
+    return;
+  }
+
+  await adapter.triggerWorkflow({
+    workflow: "seat-claimed",
+    recipients: [toNotificationRecipient(instructor)],
+    actor: toNotificationRecipient(claimingStudent),
+    data: {
+      kind: "transactional",
+      subkind: "seat_claimed",
+      badgeLabel: "Seat Claimed",
+      title: `${claimingStudent.name} claimed a seat for "${course.title}"`,
+      body: `${claimingStudent.name} (${claimingStudent.email})`,
+      meta: `Course: ${course.title} · Student enrolled`,
+      deepLink: `/instructor/${course.id}/students`,
+      ctaLabel: "View Students",
+      courseId: course.id,
+      courseTitle: course.title,
+      courseSlug: course.slug,
+      studentName: claimingStudent.name,
+      studentEmail: claimingStudent.email,
+      claimedSeatCount,
+      seatCount,
+      couponId: coupon.id,
+      createdAt,
+    },
+  });
 }
