@@ -29,7 +29,14 @@ const settingsSchema = z.object({
 
 const notificationPrefsSchema = z.object({
   intent: z.literal("update-notifications"),
-  commentsEnabled: z.enum(["true", "false"]).transform((v) => v === "true"),
+  commentsEnabled: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
+  courseRecommendationsEnabled: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional(),
 });
 
 export function meta() {
@@ -98,13 +105,34 @@ export async function action({ request }: Route.ActionArgs) {
     if (!parsedPrefs.success) {
       return data({ errors: parsedPrefs.errors }, { status: 400 });
     }
-    const updated = updateNotificationPreferences(db, currentUser.id, {
-      commentsEnabled: parsedPrefs.data.commentsEnabled,
-    });
+    const patch: {
+      commentsEnabled?: boolean;
+      courseRecommendationsEnabled?: boolean;
+    } = {};
+    if (parsedPrefs.data.commentsEnabled !== undefined) {
+      patch.commentsEnabled = parsedPrefs.data.commentsEnabled;
+    }
+    if (parsedPrefs.data.courseRecommendationsEnabled !== undefined) {
+      if (currentUser.role !== UserRole.Student) {
+        return data(
+          {
+            errors: {
+              courseRecommendationsEnabled:
+                "Only students can configure course recommendations.",
+            },
+          },
+          { status: 403 }
+        );
+      }
+      patch.courseRecommendationsEnabled =
+        parsedPrefs.data.courseRecommendationsEnabled;
+    }
+    const updated = updateNotificationPreferences(db, currentUser.id, patch);
     return {
       success: true,
       message: "Notification preferences updated.",
       commentsEnabled: updated.commentsEnabled,
+      courseRecommendationsEnabled: updated.courseRecommendationsEnabled,
     };
   }
 
@@ -139,16 +167,30 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     success?: boolean;
     message?: string;
     commentsEnabled?: boolean;
+    courseRecommendationsEnabled?: boolean;
+    errors?: Record<string, string>;
+  }>();
+  const recFetcher = useFetcher<{
+    success?: boolean;
+    message?: string;
+    commentsEnabled?: boolean;
+    courseRecommendationsEnabled?: boolean;
     errors?: Record<string, string>;
   }>();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const canConfigureComments =
     user.role === UserRole.Student || user.role === UserRole.Instructor;
+  const canConfigureCourseRecommendations = user.role === UserRole.Student;
   const commentsEnabled =
     notifFetcher.formData !== undefined
       ? notifFetcher.formData.get("commentsEnabled") === "true"
       : (notifFetcher.data?.commentsEnabled ?? notificationPrefs.commentsEnabled);
+  const courseRecommendationsEnabled =
+    recFetcher.formData !== undefined
+      ? recFetcher.formData.get("courseRecommendationsEnabled") === "true"
+      : (recFetcher.data?.courseRecommendationsEnabled ??
+        notificationPrefs.courseRecommendationsEnabled);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) {
@@ -173,6 +215,20 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       if (firstError) toast.error(firstError);
     }
   }, [notifFetcher.state, notifFetcher.data]);
+
+  useEffect(() => {
+    if (recFetcher.state === "idle" && recFetcher.data?.success) {
+      toast.success(
+        recFetcher.data.message ?? "Notification preferences updated."
+      );
+    }
+    if (recFetcher.state === "idle" && recFetcher.data?.errors) {
+      const firstError = Object.values(recFetcher.data.errors)[0] as
+        | string
+        | undefined;
+      if (firstError) toast.error(firstError);
+    }
+  }, [recFetcher.state, recFetcher.data]);
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -255,7 +311,7 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
               Manage your in-app and email notification preferences.
             </p>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <notifFetcher.Form method="post" className="space-y-4">
               <input
                 type="hidden"
@@ -293,6 +349,47 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 </Button>
               </div>
             </notifFetcher.Form>
+            {canConfigureCourseRecommendations && (
+              <recFetcher.Form method="post" className="space-y-4">
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="update-notifications"
+                />
+                <input
+                  type="hidden"
+                  name="courseRecommendationsEnabled"
+                  value={courseRecommendationsEnabled ? "false" : "true"}
+                />
+                <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                  <div>
+                    <Label
+                      htmlFor="course-recommendations-toggle"
+                      className="text-sm font-medium"
+                    >
+                      Course recommendations
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Receive recommendations when a new course launches in a
+                      category or from an instructor you follow.
+                    </p>
+                  </div>
+                  <Button
+                    id="course-recommendations-toggle"
+                    type="submit"
+                    variant={
+                      courseRecommendationsEnabled ? "default" : "outline"
+                    }
+                    size="sm"
+                    role="switch"
+                    aria-checked={courseRecommendationsEnabled}
+                    disabled={recFetcher.state !== "idle"}
+                  >
+                    {courseRecommendationsEnabled ? "Enabled" : "Disabled"}
+                  </Button>
+                </div>
+              </recFetcher.Form>
+            )}
           </CardContent>
         </Card>
       )}

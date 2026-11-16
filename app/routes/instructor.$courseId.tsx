@@ -25,6 +25,7 @@ import {
 } from "~/db/schema";
 import { eq, and, or, sql, desc, gt, gte } from "drizzle-orm";
 import { formatDuration, formatPrice } from "~/lib/utils";
+import { transitionCourseStatus } from "~/services/notifications.server";
 import { MonacoMarkdownEditor } from "~/components/monaco-markdown-editor";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -146,15 +147,6 @@ function updateCourse(id: number, title: string, description: string) {
   return db
     .update(courses)
     .set({ title, description, updatedAt: new Date().toISOString() })
-    .where(eq(courses.id, id))
-    .returning()
-    .get();
-}
-
-function updateCourseStatus(id: number, status: CourseStatus) {
-  return db
-    .update(courses)
-    .set({ status, updatedAt: new Date().toISOString() })
     .where(eq(courses.id, id))
     .returning()
     .get();
@@ -693,7 +685,11 @@ export async function action({ params, request }: Route.ActionArgs) {
   }
 
   if (intent === "update-status") {
-    updateCourseStatus(courseId, parsed.data.status);
+    await transitionCourseStatus(db, {
+      courseId,
+      newStatus: parsed.data.status,
+      actorUserId: currentUserId,
+    });
     return { success: true, field: "status" };
   }
 

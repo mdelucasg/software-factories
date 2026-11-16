@@ -1,11 +1,15 @@
 import Knock from "@knocklabs/node";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import * as schema from "~/db/schema";
 import {
+  CourseStatus,
   PurchaseDigestFrequency,
+  UserRole,
+  categories,
   comments,
   courses,
+  enrollments,
   lessons,
   modules,
   notificationPreferences,
@@ -76,6 +80,7 @@ export interface NotificationTriggerInput {
   actor?: NotificationRecipient;
   data: Record<string, unknown>;
   cancellationKey?: string;
+  idempotencyKey?: string;
 }
 
 export interface NotificationProviderAdapter {
@@ -573,4 +578,308 @@ export async function notifyCommentPosted(
       createdAt: postedComment.createdAt,
     },
   });
+}
+
+export interface CourseStatusChangedParams {
+  courseId: number;
+  previousStatus: CourseStatus;
+  newStatus: CourseStatus;
+  actorUserId: number;
+  isFirstPublish: boolean;
+}
+
+/**
+ * Emits course moderation/publish notifications (`course-status-changed`,
+ * `course-published-admin`) and first-publish `course-recommendation` workflows.
+ */
+export async function notifyCourseStatusChanged(
+  db: Db,
+  params: CourseStatusChangedParams,
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+): Promise<void> {
+  const course = db
+    .select({
+      id: courses.id,
+      title: courses.title,
+      slug: courses.slug,
+      instructorId: courses.instructorId,
+      categoryId: courses.categoryId,
+    })
+    .from(courses)
+    .where(eq(courses.id, params.courseId))
+    .get();
+
+  if (!course) {
+    return;
+  }
+
+  const actor = db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      role: users.role,
+    })
+    .from(users)
+    .where(eq(users.id, params.actorUserId))
+    .get();
+
+  if (!actor) {
+    return;
+  }
+
+  const instructor = db
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+    })
+    .from(users)
+    .where(eq(users.id, course.instructorId))
+    .get();
+
+  if (
+    actor.role === UserRole.Admin &&
+    actor.id !== course.instructorId &&
+    instructor
+  ) {
+    await adapter.triggerWorkflow({
+      workflow: "course-status-changed",
+      recipients: [toNotificationRecipient(instructor)],
+      actor: toNotificationRecipient(actor),
+      data: {
+        kind: "transactional",
+        subkind: "course_status",
+        badgeLabel: "Course Status",
+        title: `Course "${course.title}" status changed to ${params.newStatus}`,
+        body: `${actor.name} changed "${course.title}" from ${params.previousStatus} to ${params.newStatus}.`,
+        meta: `Course: ${course.title} · ${params.previousStatus} → ${params.newStatus}`,
+        deepLink: `/instructor/${course.id}`,
+        ctaLabel: "View Course",
+        courseId: course.id,
+        courseTitle: course.title,
+        previousStatus: params.previousStatus,
+        newStatus: params.newStatus,
+        actorName: actor.name,
+      },
+    });
+  }
+
+  if (
+    actor.role === UserRole.Instructor &&
+    params.previousStatus === CourseStatus.Draft &&
+    params.newStatus === CourseStatus.Published
+  ) {
+    const admins = db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+      })
+      .from(users)
+      .where(eq(users.role, UserRole.Admin))
+      .all();
+
+    if (admins.length > 0) {
+      await adapter.triggerWorkflow({
+        workflow: "course-published-admin",
+        recipients: admins.map(toNotificationRecipient),
+        actor: toNotificationRecipient(actor),
+        data: {
+          kind: "transactional",
+          subkind: "course_status",
+          badgeLabel: "Course Published",
+          title: `${actor.name} published "${course.title}"`,
+          body: `Instructor ${actor.name} transitioned "${course.title}" from Draft to Published.`,
+          meta: `Course: ${course.title} · Published by ${actor.name}`,
+          deepLink: "/admin/courses",
+          ctaLabel: "Review Courses",
+          courseId: course.id,
+          courseTitle: course.title,
+          instructorName: actor.name,
+        },
+      });
+    }
+  }
+
+  if (params.newStatus === CourseStatus.Published && params.isFirstPublish) {
+    const category = db
+      .select({ name: categories.name })
+      .from(categories)
+      .where(eq(categories.id, course.categoryId))
+      .get();
+
+    const categoryName = category?.name ?? "this category";
+    const instructorName = instructor?.name ?? "the instructor";
+
+    const enrolledInTarget = new Set(
+      db
+        .select({ userId: enrollments.userId })
+        .from(enrollments)
+        .where(eq(enrollments.courseId, course.id))
+        .all()
+        .map((row) => row.userId)
+    );
+
+    const affinityRows = db
+      .select({
+        userId: users.id,
+        userName: users.name,
+        userEmail: users.email,
+        enrolledCourseCategoryId: courses.categoryId,
+        enrolledCourseInstructorId: courses.instructorId,
+      })
+      .from(enrollments)
+      .innerJoin(courses, eq(enrollments.courseId, courses.id))
+      .innerJoin(users, eq(enrollments.userId, users.id))
+      .where(
+        and(
+          ne(courses.id, course.id),
+          ne(users.id, course.instructorId),
+          eq(users.role, UserRole.Student),
+          or(
+            eq(courses.categoryId, course.categoryId),
+            eq(courses.instructorId, course.instructorId)
+          )
+        )
+      )
+      .all();
+
+    const candidates = new Map<
+      number,
+      {
+        recipient: NotificationRecipient;
+        sameCategory: boolean;
+        sameInstructor: boolean;
+      }
+    >();
+
+    for (const row of affinityRows) {
+      if (enrolledInTarget.has(row.userId)) {
+        continue;
+      }
+
+      const existing = candidates.get(row.userId);
+      const sameCategory =
+        (existing?.sameCategory ?? false) ||
+        row.enrolledCourseCategoryId === course.categoryId;
+      const sameInstructor =
+        (existing?.sameInstructor ?? false) ||
+        row.enrolledCourseInstructorId === course.instructorId;
+
+      candidates.set(row.userId, {
+        recipient: {
+          id: String(row.userId),
+          name: row.userName,
+          email: row.userEmail,
+        },
+        sameCategory,
+        sameInstructor,
+      });
+    }
+
+    for (const [studentId, candidate] of candidates.entries()) {
+      const prefs = getNotificationPreferences(db, studentId);
+      if (!prefs.courseRecommendationsEnabled) {
+        continue;
+      }
+
+      const affinityReason =
+        candidate.sameCategory && candidate.sameInstructor
+          ? `Because you're enrolled in ${categoryName} and courses by ${instructorName}`
+          : candidate.sameCategory
+            ? `Because you're enrolled in ${categoryName}`
+            : `Because you're taking a course by ${instructorName}`;
+
+      const idempotencyKey = `course-rec-${course.id}-${studentId}`;
+
+      await adapter.triggerWorkflow({
+        workflow: "course-recommendation",
+        recipients: [candidate.recipient],
+        ...(instructor ? { actor: toNotificationRecipient(instructor) } : {}),
+        idempotencyKey,
+        cancellationKey: idempotencyKey,
+        data: {
+          kind: "engagement",
+          subkind: "course_recommendation",
+          badgeLabel: "Course Recommendation",
+          title: `New course: ${course.title}`,
+          body: affinityReason,
+          meta: `${categoryName} · ${instructorName}`,
+          deepLink: `/courses/${course.slug}`,
+          ctaLabel: "View Course",
+          courseId: course.id,
+          courseTitle: course.title,
+          courseSlug: course.slug,
+          instructorName,
+          categoryName,
+          affinityReason,
+          idempotencyKey,
+        },
+      });
+    }
+  }
+}
+
+export interface TransitionCourseStatusParams {
+  courseId: number;
+  newStatus: CourseStatus;
+  actorUserId: number;
+  now?: Date;
+}
+
+/**
+ * Transitions a course's status, records `firstPublishedAt` on its initial publish,
+ * and dispatches status-change and first-publish recommendation notifications.
+ */
+export async function transitionCourseStatus(
+  db: Db,
+  params: TransitionCourseStatusParams,
+  adapter: NotificationProviderAdapter = getNotificationAdapter()
+) {
+  const existing = db
+    .select({
+      id: courses.id,
+      status: courses.status,
+      firstPublishedAt: courses.firstPublishedAt,
+    })
+    .from(courses)
+    .where(eq(courses.id, params.courseId))
+    .get();
+
+  if (!existing) {
+    return null;
+  }
+
+  const nowIso = (params.now ?? new Date()).toISOString();
+  const isFirstPublish =
+    params.newStatus === CourseStatus.Published &&
+    existing.firstPublishedAt === null;
+
+  const updated = db
+    .update(courses)
+    .set({
+      status: params.newStatus,
+      updatedAt: nowIso,
+      ...(isFirstPublish ? { firstPublishedAt: nowIso } : {}),
+    })
+    .where(eq(courses.id, params.courseId))
+    .returning()
+    .get();
+
+  if (existing.status !== params.newStatus) {
+    await notifyCourseStatusChanged(
+      db,
+      {
+        courseId: params.courseId,
+        previousStatus: existing.status,
+        newStatus: params.newStatus,
+        actorUserId: params.actorUserId,
+        isFirstPublish,
+      },
+      adapter
+    );
+  }
+
+  return updated;
 }

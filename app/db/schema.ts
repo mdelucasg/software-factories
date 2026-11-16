@@ -83,6 +83,7 @@ export const courses = sqliteTable("courses", {
     .notNull()
     .references(() => categories.id),
   status: text("status").notNull().$type<CourseStatus>(),
+  firstPublishedAt: text("first_published_at"),
   coverImageUrl: text("cover_image_url"),
   price: integer("price").notNull().default(0),
   pppEnabled: integer("ppp_enabled", { mode: "boolean" })
