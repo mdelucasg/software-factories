@@ -7,7 +7,10 @@ import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { parseParams, parseFormData } from "~/lib/validation";
 import { getSeatAvailability } from "~/lib/refunds.server";
-import { notifySeatClaimed } from "~/services/notifications.server";
+import {
+  notifySeatClaimed,
+  recordLearningActivity,
+} from "~/services/notifications.server";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Ticket, AlertCircle, CheckCircle2, Globe } from "lucide-react";
@@ -208,6 +211,11 @@ export async function action({ params, request }: Route.ActionArgs) {
   await notifySeatClaimed(db, {
     couponId: result.couponId,
     claimedByUserId: currentUserId,
+  });
+
+  await recordLearningActivity(db, {
+    userId: currentUserId,
+    courseId: result.enrollment.courseId,
   });
 
   const course = getCourseById(result.enrollment.courseId);

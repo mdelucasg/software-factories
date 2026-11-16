@@ -5,7 +5,14 @@ import { z } from "zod";
 import type { Route } from "./+types/admin.refunds";
 import { getCurrentUserId } from "~/lib/session";
 import { parseFormData } from "~/lib/validation";
-import { RefundPayoutStatus, RefundStatus, UserRole, users } from "~/db/schema";
+import {
+  RefundPayoutStatus,
+  RefundStatus,
+  UserRole,
+  purchases,
+  refunds,
+  users,
+} from "~/db/schema";
 import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { Card, CardContent } from "~/components/ui/card";
@@ -25,6 +32,7 @@ import {
 import {
   notifyRefundRequestDecided,
   notifyRefundStatusChanged,
+  recordLearningActivity,
 } from "~/services/notifications.server";
 import { RULE_BREAK_LABELS } from "~/lib/refund-rules";
 
@@ -180,6 +188,18 @@ export async function action({ request }: Route.ActionArgs) {
     refundRequestId,
     decision: intent === "approve" ? "approved" : "declined",
   });
+
+  if (intent === "approve") {
+    const refundedPurchase = db
+      .select({ userId: purchases.userId })
+      .from(refunds)
+      .innerJoin(purchases, eq(refunds.purchaseId, purchases.id))
+      .where(eq(refunds.id, refundRequestId))
+      .get();
+    if (refundedPurchase) {
+      await recordLearningActivity(db, { userId: refundedPurchase.userId });
+    }
+  }
 
   return {
     success: true,

@@ -24,7 +24,9 @@ import { eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
 import {
+  cancelAdherenceReminder,
   getNotificationPreferences,
+  recordLearningActivity,
   updateNotificationPreferences,
 } from "~/services/notifications.server";
 
@@ -42,6 +44,7 @@ const notificationPrefsSchema = z.object({
   commentsEnabled: booleanStringSchema.optional(),
   seatClaimedEnabled: booleanStringSchema.optional(),
   purchaseDigestFrequency: z.nativeEnum(PurchaseDigestFrequency).optional(),
+  adherenceRemindersEnabled: booleanStringSchema.optional(),
 });
 
 export function meta() {
@@ -120,13 +123,27 @@ export async function action({ request }: Route.ActionArgs) {
       ...(parsedPrefs.data.purchaseDigestFrequency !== undefined
         ? { purchaseDigestFrequency: parsedPrefs.data.purchaseDigestFrequency }
         : {}),
+      ...(parsedPrefs.data.adherenceRemindersEnabled !== undefined
+        ? {
+            adherenceRemindersEnabled:
+              parsedPrefs.data.adherenceRemindersEnabled,
+          }
+        : {}),
     });
+
+    if (parsedPrefs.data.adherenceRemindersEnabled === false) {
+      await cancelAdherenceReminder(db, { userId: currentUser.id });
+    } else if (parsedPrefs.data.adherenceRemindersEnabled === true) {
+      await recordLearningActivity(db, { userId: currentUser.id });
+    }
+
     return {
       success: true,
       message: "Notification preferences updated.",
       commentsEnabled: updated.commentsEnabled,
       seatClaimedEnabled: updated.seatClaimedEnabled,
       purchaseDigestFrequency: updated.purchaseDigestFrequency,
+      adherenceRemindersEnabled: updated.adherenceRemindersEnabled,
     };
   }
 
@@ -163,13 +180,15 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
     commentsEnabled?: boolean;
     seatClaimedEnabled?: boolean;
     purchaseDigestFrequency?: PurchaseDigestFrequency;
+    adherenceRemindersEnabled?: boolean;
     errors?: Record<string, string>;
   }>();
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   const isInstructor = user.role === UserRole.Instructor;
+  const isStudent = user.role === UserRole.Student;
   const canConfigureComments =
-    user.role === UserRole.Student || isInstructor;
+    isStudent || isInstructor;
   const pendingComments = notifFetcher.formData?.get("commentsEnabled");
   const commentsEnabled =
     typeof pendingComments === "string"
@@ -189,6 +208,15 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
       ? pendingDigest
       : (notifFetcher.data?.purchaseDigestFrequency ??
         notificationPrefs.purchaseDigestFrequency);
+
+  const pendingAdherence = notifFetcher.formData?.get(
+    "adherenceRemindersEnabled"
+  );
+  const adherenceRemindersEnabled =
+    typeof pendingAdherence === "string"
+      ? pendingAdherence === "true"
+      : (notifFetcher.data?.adherenceRemindersEnabled ??
+        notificationPrefs.adherenceRemindersEnabled);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) {
@@ -333,6 +361,46 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
                 </Button>
               </div>
             </notifFetcher.Form>
+
+            {isStudent && (
+              <notifFetcher.Form method="post">
+                <input
+                  type="hidden"
+                  name="intent"
+                  value="update-notifications"
+                />
+                <input
+                  type="hidden"
+                  name="adherenceRemindersEnabled"
+                  value={adherenceRemindersEnabled ? "false" : "true"}
+                />
+                <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                  <div>
+                    <Label
+                      htmlFor="adherence-toggle"
+                      className="text-sm font-medium"
+                    >
+                      Adherence reminders
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Receive a study reminder after 72 hours without learning
+                      activity on an incomplete course.
+                    </p>
+                  </div>
+                  <Button
+                    id="adherence-toggle"
+                    type="submit"
+                    variant={adherenceRemindersEnabled ? "default" : "outline"}
+                    size="sm"
+                    role="switch"
+                    aria-checked={adherenceRemindersEnabled}
+                    disabled={notifFetcher.state !== "idle"}
+                  >
+                    {adherenceRemindersEnabled ? "Enabled" : "Disabled"}
+                  </Button>
+                </div>
+              </notifFetcher.Form>
+            )}
 
             {isInstructor && (
               <>

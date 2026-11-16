@@ -5,6 +5,7 @@ import { getCurrentUserId } from "~/lib/session";
 import { parseJsonBody } from "~/lib/validation";
 import { db } from "~/db";
 import { videoWatchEvents } from "~/db/schema";
+import { recordLearningActivity } from "~/services/notifications.server";
 
 const videoTrackingSchema = z.object({
   lessonId: z.number(),
@@ -36,6 +37,14 @@ export async function action({ request }: Route.ActionArgs) {
     })
     .returning()
     .get();
+
+  if (eventType === "play" || eventType === "ended") {
+    await recordLearningActivity(db, {
+      userId: currentUserId,
+      lessonId,
+      videoEventType: eventType,
+    });
+  }
 
   return { success: true };
 }

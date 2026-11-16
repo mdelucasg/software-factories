@@ -4,7 +4,10 @@ import { toast } from "sonner";
 import { z } from "zod";
 import type { Route } from "./+types/courses.$slug.purchase";
 import { getCurrentUserId } from "~/lib/session";
-import { notifyPurchaseCompleted } from "~/services/notifications.server";
+import {
+  notifyPurchaseCompleted,
+  recordLearningActivity,
+} from "~/services/notifications.server";
 import { db } from "~/db";
 import {
   courses,
@@ -371,6 +374,10 @@ export async function action({ params, request }: Route.ActionArgs) {
     const purchase = createPurchase(currentUserId, course.id, pppPrice, country);
     enrollUser(currentUserId, course.id, false, false);
     await notifyPurchaseCompleted(db, { purchaseId: purchase.id });
+    await recordLearningActivity(db, {
+      userId: currentUserId,
+      courseId: course.id,
+    });
     throw redirect(`/courses/${slug}/welcome`);
   }
 
