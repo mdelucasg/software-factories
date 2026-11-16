@@ -42,6 +42,12 @@ export enum TeamMemberRole {
   Member = "member",
 }
 
+export enum PurchaseDigestFrequency {
+  Daily = "daily",
+  Weekly = "weekly",
+  Off = "off",
+}
+
 // ─── Tables ───
 
 export const users = sqliteTable("users", {
@@ -371,6 +377,35 @@ export const videoWatchEvents = sqliteTable("video_watch_events", {
   eventType: text("event_type").notNull(),
   positionSeconds: real("position_seconds").notNull(),
   createdAt: text("created_at")
+    .notNull()
+    .$defaultFn(() => new Date().toISOString()),
+});
+
+export const notificationPreferences = sqliteTable("notification_preferences", {
+  userId: integer("user_id")
+    .primaryKey()
+    .references(() => users.id),
+  commentsEnabled: integer("comments_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  seatClaimedEnabled: integer("seat_claimed_enabled", { mode: "boolean" })
+    .notNull()
+    .default(true),
+  purchaseDigestFrequency: text("purchase_digest_frequency")
+    .notNull()
+    .$type<PurchaseDigestFrequency>()
+    .default(PurchaseDigestFrequency.Daily),
+  adherenceRemindersEnabled: integer("adherence_reminders_enabled", {
+    mode: "boolean",
+  })
+    .notNull()
+    .default(true),
+  courseRecommendationsEnabled: integer("course_recommendations_enabled", {
+    mode: "boolean",
+  })
+    .notNull()
+    .default(true),
+  updatedAt: text("updated_at")
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
 });

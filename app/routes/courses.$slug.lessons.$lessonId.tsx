@@ -10,6 +10,7 @@ import {
   type RenderedComment,
 } from "~/components/comment-thread";
 import { MIN_COMMENT_LENGTH, MAX_COMMENT_LENGTH } from "~/lib/comments";
+import { notifyCommentPosted } from "~/services/notifications.server";
 import { db } from "~/db";
 import {
   categories,
@@ -900,12 +901,17 @@ export async function action({ params, request }: Route.ActionArgs) {
         if (!parsed.success) {
           return { ok: false, error: "Enter a comment before posting." };
         }
-        createComment(
+        const created = createComment(
           currentUserId,
           lessonId,
           parsed.data.parentId ?? null,
           parsed.data.body
         );
+        await notifyCommentPosted(db, {
+          commentId: created.id,
+          lessonId,
+          authorId: currentUserId,
+        });
         return { ok: true };
       }
 

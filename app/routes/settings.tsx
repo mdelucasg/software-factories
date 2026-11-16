@@ -17,10 +17,19 @@ import { db } from "~/db";
 import { eq } from "drizzle-orm";
 import { formatPrice } from "~/lib/utils";
 import { listRefundRequestsForBuyer } from "~/lib/refunds.server";
+import {
+  getNotificationPreferences,
+  updateNotificationPreferences,
+} from "~/services/notifications.server";
 
 const settingsSchema = z.object({
   name: z.string().trim().min(1, "Name cannot be empty."),
   bio: z.string().trim().optional(),
+});
+
+const notificationPrefsSchema = z.object({
+  intent: z.literal("update-notifications"),
+  commentsEnabled: z.enum(["true", "false"]).transform((v) => v === "true"),
 });
 
 export function meta() {
@@ -50,6 +59,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   }
 
   const refundRequests = listRefundRequestsForBuyer(db, currentUserId);
+  const notificationPrefs = getNotificationPreferences(db, currentUserId);
 
   return {
     user: {
@@ -60,6 +70,7 @@ export async function loader({ request }: Route.LoaderArgs) {
       role: currentUser.role,
     },
     refundRequests,
+    notificationPrefs,
   };
 }
 
@@ -80,6 +91,23 @@ export async function action({ request }: Route.ActionArgs) {
   }
 
   const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "update-notifications") {
+    const parsedPrefs = parseFormData(formData, notificationPrefsSchema);
+    if (!parsedPrefs.success) {
+      return data({ errors: parsedPrefs.errors }, { status: 400 });
+    }
+    const updated = updateNotificationPreferences(db, currentUser.id, {
+      commentsEnabled: parsedPrefs.data.commentsEnabled,
+    });
+    return {
+      success: true,
+      message: "Notification preferences updated.",
+      commentsEnabled: updated.commentsEnabled,
+    };
+  }
+
   const parsed = parseFormData(formData, settingsSchema);
 
   if (!parsed.success) {
@@ -98,22 +126,53 @@ export async function action({ request }: Route.ActionArgs) {
 }
 
 export default function Settings({ loaderData }: Route.ComponentProps) {
-  const { user, refundRequests } = loaderData;
+  const { user, refundRequests, notificationPrefs } = loaderData;
   const openCount = refundRequests.filter(
     (refundRequest) => refundRequest.status === RefundStatus.Open
   ).length;
-  const fetcher = useFetcher();
+  const fetcher = useFetcher<{
+    success?: boolean;
+    message?: string;
+    errors?: Record<string, string>;
+  }>();
+  const notifFetcher = useFetcher<{
+    success?: boolean;
+    message?: string;
+    commentsEnabled?: boolean;
+    errors?: Record<string, string>;
+  }>();
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const canConfigureComments =
+    user.role === UserRole.Student || user.role === UserRole.Instructor;
+  const commentsEnabled =
+    notifFetcher.formData !== undefined
+      ? notifFetcher.formData.get("commentsEnabled") === "true"
+      : (notifFetcher.data?.commentsEnabled ?? notificationPrefs.commentsEnabled);
 
   useEffect(() => {
     if (fetcher.state === "idle" && fetcher.data?.success) {
-      toast.success("Profile updated successfully.");
+      toast.success(fetcher.data.message ?? "Profile updated successfully.");
     }
     if (fetcher.state === "idle" && fetcher.data?.errors) {
       const firstError = Object.values(fetcher.data.errors)[0] as string | undefined;
       if (firstError) toast.error(firstError);
     }
   }, [fetcher.state, fetcher.data]);
+
+  useEffect(() => {
+    if (notifFetcher.state === "idle" && notifFetcher.data?.success) {
+      toast.success(
+        notifFetcher.data.message ?? "Notification preferences updated."
+      );
+    }
+    if (notifFetcher.state === "idle" && notifFetcher.data?.errors) {
+      const firstError = Object.values(notifFetcher.data.errors)[0] as
+        | string
+        | undefined;
+      if (firstError) toast.error(firstError);
+    }
+  }, [notifFetcher.state, notifFetcher.data]);
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -187,6 +246,56 @@ export default function Settings({ loaderData }: Route.ComponentProps) {
           </fetcher.Form>
         </CardContent>
       </Card>
+
+      {canConfigureComments && (
+        <Card className="mt-8 max-w-md">
+          <CardHeader>
+            <h2 className="text-lg font-semibold">Notifications</h2>
+            <p className="text-sm text-muted-foreground">
+              Manage your in-app and email notification preferences.
+            </p>
+          </CardHeader>
+          <CardContent>
+            <notifFetcher.Form method="post" className="space-y-4">
+              <input
+                type="hidden"
+                name="intent"
+                value="update-notifications"
+              />
+              <input
+                type="hidden"
+                name="commentsEnabled"
+                value={commentsEnabled ? "false" : "true"}
+              />
+              <div className="flex items-center justify-between gap-4 rounded-md border p-3">
+                <div>
+                  <Label
+                    htmlFor="comments-toggle"
+                    className="text-sm font-medium"
+                  >
+                    Lesson comment notifications
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    Receive notifications when someone posts a comment or replies
+                    in a lesson thread.
+                  </p>
+                </div>
+                <Button
+                  id="comments-toggle"
+                  type="submit"
+                  variant={commentsEnabled ? "default" : "outline"}
+                  size="sm"
+                  role="switch"
+                  aria-checked={commentsEnabled}
+                  disabled={notifFetcher.state !== "idle"}
+                >
+                  {commentsEnabled ? "Enabled" : "Disabled"}
+                </Button>
+              </div>
+            </notifFetcher.Form>
+          </CardContent>
+        </Card>
+      )}
 
       {refundRequests.length > 0 && (
         <Card className="mt-8 max-w-md">
