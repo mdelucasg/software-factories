@@ -45,6 +45,7 @@ export enum TeamMemberRole {
 export enum PurchaseDigestFrequency {
   Daily = "daily",
   Weekly = "weekly",
+  Monthly = "monthly",
   Off = "off",
 }
 
