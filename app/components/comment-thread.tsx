@@ -350,20 +350,16 @@ function Replies({
   );
 }
 
-export function CommentThread({
-  comments,
-  currentUserId,
-  canModerate,
-  canPost,
-  instructorName,
-}: {
+type CommentThreadProps = {
   comments: RenderedComment[];
   currentUserId: number | null;
   /** Owning instructor or admin — may delete anyone's comment. */
   canModerate: boolean;
   canPost: boolean;
   instructorName: string;
-}) {
+};
+
+export function CommentThread(props: CommentThreadProps) {
   return (
     <Card className="mb-8">
       <CardContent className="p-6">
@@ -371,40 +367,54 @@ export function CommentThread({
           <MessageSquare className="size-5 text-primary" />
           <h2 className="text-xl font-semibold">Questions &amp; Discussion</h2>
         </div>
-
-        {comments.length === 0 ? (
-          <div className="rounded-lg border border-dashed p-6 text-center">
-            <p className="font-medium">Stuck on this lesson?</p>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Ask here — {instructorName} answers questions in this course.
-              There&apos;s no such thing as a question that&apos;s too basic.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y">
-            {comments.map((comment) => (
-              <CommentItem
-                key={comment.id}
-                comment={comment}
-                currentUserId={currentUserId}
-                canModerate={canModerate}
-                canPost={canPost}
-                isReply={false}
-              />
-            ))}
-          </div>
-        )}
-
-        {canPost && (
-          <div className="mt-6 border-t pt-6">
-            <CommentForm
-              intent="create-comment"
-              placeholder="Ask a question or share what you found..."
-              submitLabel="Post comment"
-            />
-          </div>
-        )}
+        <CommentThreadBody {...props} />
       </CardContent>
     </Card>
+  );
+}
+
+/** The thread without its card and heading, for a page that frames it itself. */
+export function CommentThreadBody({
+  comments,
+  currentUserId,
+  canModerate,
+  canPost,
+  instructorName,
+}: CommentThreadProps) {
+  return (
+    <>
+      {comments.length === 0 ? (
+        <div className="rounded-lg border border-dashed p-6 text-center">
+          <p className="font-medium">Stuck on this lesson?</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Ask here — {instructorName} answers questions in this course.
+            There&apos;s no such thing as a question that&apos;s too basic.
+          </p>
+        </div>
+      ) : (
+        <div className="divide-y">
+          {comments.map((comment) => (
+            <CommentItem
+              key={comment.id}
+              comment={comment}
+              currentUserId={currentUserId}
+              canModerate={canModerate}
+              canPost={canPost}
+              isReply={false}
+            />
+          ))}
+        </div>
+      )}
+
+      {canPost && (
+        <div className="mt-6 border-t pt-6">
+          <CommentForm
+            intent="create-comment"
+            placeholder="Ask a question or share what you found..."
+            submitLabel="Post comment"
+          />
+        </div>
+      )}
+    </>
   );
 }
