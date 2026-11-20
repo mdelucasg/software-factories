@@ -369,12 +369,13 @@ export function HydrateFallback() {
         <Skeleton className="h-10 flex-1" />
         <Skeleton className="h-10 w-20" />
       </div>
-      <div className="mb-8 flex flex-wrap gap-2">
+      <div className="mb-6 flex flex-wrap gap-2">
         {Array.from({ length: 5 }).map((_, i) => (
           // oxlint-disable-next-line react/no-array-index-key -- placeholders never reorder
           <Skeleton key={i} className="h-8 w-24 rounded-full" />
         ))}
       </div>
+      <Skeleton className="mb-6 h-5 w-32" />
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 6 }).map((_, i) => (
           // oxlint-disable-next-line react/no-array-index-key -- placeholders never reorder
