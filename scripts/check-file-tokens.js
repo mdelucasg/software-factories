@@ -52,6 +52,8 @@ How to split:
   into a fixtures file in the same tests/ folder.
 - Scripts and seed data: move large data literals into their own files and
   import them.
+- Commit the behaviour-preserving split separately from feature changes so
+  reviewers can verify equivalence.
 
 When you are done, run \`npm run check\` and commit again.`);
   process.exit(1);

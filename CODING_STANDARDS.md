@@ -40,11 +40,9 @@ instructor analytics route only; apply it to every other module by hand. See
 
 Test setup calls the module's own functions. When the function you need does
 not exist, add it to the module rather than inserting rows directly, so a
-change to how the module stores its data leaves its tests alone.
-
-## Keep files under 5000 tokens
-
-Keep every file under 5000 tokens.
+change to how the module stores its data leaves its tests alone. For tables
+the module only reads and no other module owns writing, insert through a
+shared test fixture rather than adding production writers solely for tests.
 
 ## Wrap related writes in a transaction
 
@@ -107,9 +105,21 @@ const [items, setItems] = useState(rows);
 const count = items.length;
 ```
 
-## A comment explains why
+## Keep form state across tab switches and collapsibles
 
-Name and extract until a comment is unnecessary. A comment earns its place
-only for a _why_ the code cannot express: a constraint, a decision, a link to
-the ADR behind it. A comment that restates _what_ the code does goes stale the
-first time the code changes.
+Keep panels that hold user input mounted (for example, Radix `forceMount`
+with `data-[state=inactive]:hidden`) so switching tabs or collapsing a
+section preserves unsaved input.
+
+## Use GLOSSARY.md terms in new code and copy
+
+Name new components, modules, and user-facing copy with the domain terms in
+`GLOSSARY.md`. Leave unrelated legacy table and file names untouched unless
+the ticket asks to rename them.
+
+## Delete comments; capture decisions in ADRs
+
+Delete comments aggressively — including "why" comments. Name, extract, and
+test until the code speaks for itself. Product and architectural decisions
+written in code comments go stale quickly; when a change needs to explain a
+decision, flag it in the PR and record it as an ADR in `docs/adr/` instead.

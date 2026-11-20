@@ -52,6 +52,16 @@ change you are reporting on trust.
 Screenshots are PR evidence: a before and an after for a change that shows in
 the UI.
 
+## Signing in as a seeded user
+
+Switch users via `POST /api/switch-user` (seeded IDs: `1` Admin, `2` Instructor,
+`5` Student enrolled in `introduction-to-typescript`):
+
+```bash
+agent-browser open http://localhost:5173/courses
+agent-browser eval "fetch('/api/switch-user', { method: 'POST', body: new URLSearchParams({ userId: '5' }), credentials: 'include' }).then(r => r.status)"
+```
+
 ## Two things that will bite you
 
 **Hydration lags "networkidle".** The button is in the server HTML before
