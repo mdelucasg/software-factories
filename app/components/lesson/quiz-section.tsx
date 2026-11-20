@@ -6,7 +6,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import { QuizForm } from "./quiz-form";
 import { QuizResultCard } from "./quiz-result";
-import type { LessonQuiz, QuizResult } from "./quiz-types";
+import type { LessonQuiz, QuizResult } from "~/modules/lesson-page";
 
 export function QuizSection({
   quiz,

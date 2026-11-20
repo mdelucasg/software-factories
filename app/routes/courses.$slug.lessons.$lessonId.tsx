@@ -58,6 +58,10 @@ const saveNoteSchema = z.object({
     ),
 });
 
+const submitQuizSchema = z.object({
+  quizId: z.coerce.number().int().positive(),
+});
+
 const deleteCommentSchema = z.object({
   intent: z.literal("delete-comment"),
   commentId: z.coerce.number().int(),
@@ -249,10 +253,11 @@ function saveNoteIntent({ formData, personId, lessonId }: ActionContext) {
 }
 
 function submitQuizIntent({ formData, personId, lessonId }: ActionContext) {
-  const quizId = Number(formData.get("quizId"));
-  if (isNaN(quizId)) {
+  const parsed = parseFormData(formData, submitQuizSchema);
+  if (!parsed.success) {
     throw data("Invalid quiz ID", { status: 400 });
   }
+  const { quizId } = parsed.data;
   // Scope the quiz to this lesson so a quiz elsewhere can't be reached by
   // posting its id to this route.
   if (!findLessonQuiz(lessonId, quizId)) {

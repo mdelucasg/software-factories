@@ -6,13 +6,14 @@ import {
   quizAttempts,
   quizAnswers,
 } from "~/db/schema";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import type { LessonQuiz, QuestionResult, QuizResult } from "./quiz-types";
 
-export function getQuizByLessonId(lessonId: number) {
+function getQuizByLessonId(lessonId: number) {
   return db.select().from(quizzes).where(eq(quizzes.lessonId, lessonId)).get();
 }
 
-export function getQuizWithQuestions(quizId: number) {
+function getQuizWithQuestions(quizId: number) {
   const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get();
   if (!quiz) return null;
 
@@ -23,19 +24,25 @@ export function getQuizWithQuestions(quizId: number) {
     .orderBy(quizQuestions.position)
     .all();
 
-  const questionsWithOptions = questions.map((question) => {
-    const options = db
-      .select()
-      .from(quizOptions)
-      .where(eq(quizOptions.questionId, question.id))
-      .all();
-    return { ...question, options };
-  });
+  const options = db
+    .select()
+    .from(quizOptions)
+    .where(
+      inArray(
+        quizOptions.questionId,
+        questions.map((question) => question.id)
+      )
+    )
+    .all();
+  const questionsWithOptions = questions.map((question) => ({
+    ...question,
+    options: options.filter((option) => option.questionId === question.id),
+  }));
 
   return { ...quiz, questions: questionsWithOptions };
 }
 
-export function getBestAttempt(userId: number, quizId: number) {
+function getBestAttempt(userId: number, quizId: number) {
   return db
     .select()
     .from(quizAttempts)
@@ -47,7 +54,7 @@ export function getBestAttempt(userId: number, quizId: number) {
     .get();
 }
 
-export function calculateGrade(score: number): string {
+function calculateGrade(score: number): string {
   if (score >= 0.9) return "A";
   if (score >= 0.8) return "B";
   if (score >= 0.7) return "C";
@@ -55,31 +62,21 @@ export function calculateGrade(score: number): string {
   return "F";
 }
 
-export type QuestionResult = {
-  questionId: number;
-  correct: boolean;
-  selectedOptionId: number | null;
-  correctOptionId: number | null;
-};
-
-function correctOptionFor(question: { id: number; questionType: string }) {
-  if (
-    question.questionType !== "multiple_choice" &&
-    question.questionType !== "true_false"
-  ) {
-    return null;
-  }
-  const correctOpt = db
-    .select()
+/** The correct option's id for each of the quiz's questions, in one query. */
+function correctOptionsFor(quizId: number): Map<number, number> {
+  const rows = db
+    .select({ questionId: quizOptions.questionId, optionId: quizOptions.id })
     .from(quizOptions)
+    .innerJoin(quizQuestions, eq(quizQuestions.id, quizOptions.questionId))
     .where(
-      and(
-        eq(quizOptions.questionId, question.id),
-        eq(quizOptions.isCorrect, true)
-      )
+      and(eq(quizQuestions.quizId, quizId), eq(quizOptions.isCorrect, true))
     )
-    .get();
-  return correctOpt ? correctOpt.id : null;
+    .all();
+  const correct = new Map<number, number>();
+  for (const row of rows) {
+    if (!correct.has(row.questionId)) correct.set(row.questionId, row.optionId);
+  }
+  return correct;
 }
 
 function markQuestions(
@@ -92,6 +89,7 @@ function markQuestions(
     .where(eq(quizQuestions.quizId, quizId))
     .orderBy(quizQuestions.position)
     .all();
+  const correctOptions = correctOptionsFor(quizId);
 
   return questions.map((q) => {
     const selected = selectedAnswers[q.id];
@@ -103,7 +101,7 @@ function markQuestions(
         correctOptionId: null,
       };
     }
-    const correctOptionId = correctOptionFor(q);
+    const correctOptionId = correctOptions.get(q.id) ?? null;
     return {
       questionId: q.id,
       correct: selected === correctOptionId,
@@ -138,11 +136,11 @@ function recordAttempt(
   return attempt;
 }
 
-export function computeResult(
+export function scoreQuizAttempt(
   userId: number,
   quizId: number,
   selectedAnswers: Record<number, number>
-) {
+): QuizResult | null {
   try {
     const quiz = db.select().from(quizzes).where(eq(quizzes.id, quizId)).get();
     if (!quiz) {
@@ -175,19 +173,6 @@ export function computeResult(
     return null;
   }
 }
-
-export type LessonQuiz = {
-  id: number;
-  title: string;
-  passingScore: number;
-  questions: Array<{
-    id: number;
-    questionText: string;
-    questionType: string;
-    position: number;
-    options: Array<{ id: number; optionText: string }>;
-  }>;
-};
 
 function withoutAnswers(
   quizData: NonNullable<ReturnType<typeof getQuizWithQuestions>>

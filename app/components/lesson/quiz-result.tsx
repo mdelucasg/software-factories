@@ -12,7 +12,7 @@ import type {
   QuestionResult,
   QuizQuestion,
   QuizResult,
-} from "./quiz-types";
+} from "~/modules/lesson-page";
 
 export function QuizResultCard({
   quiz,

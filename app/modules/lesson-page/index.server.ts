@@ -11,7 +11,7 @@ export {
   getLessonQuiz,
   findLessonQuiz,
   parseQuizAnswers,
-  computeResult as scoreQuizAttempt,
+  scoreQuizAttempt,
 } from "./lib/quiz.server";
 export {
   getRenderedThread,

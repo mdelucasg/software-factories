@@ -3,7 +3,7 @@ import type { useFetcher } from "react-router";
 import { HelpCircle } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
-import type { LessonQuiz, QuizQuestion } from "./quiz-types";
+import type { LessonQuiz, QuizQuestion } from "~/modules/lesson-page";
 
 type Answers = Record<number, number>;
 
