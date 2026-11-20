@@ -14,6 +14,7 @@ import {
   LessonProgressStatus,
 } from "~/db/schema";
 import { eq, like, and, or, sql, inArray } from "drizzle-orm";
+import { z } from "zod";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, Search } from "lucide-react";
@@ -280,9 +281,21 @@ export function meta() {
   ];
 }
 
+const optionalFilter = z
+  .string()
+  .nullable()
+  .transform((value) => value?.trim() || null);
+
+const catalogParamsSchema = z.object({
+  search: optionalFilter,
+  category: optionalFilter,
+});
+
 export async function loader({ request, url }: Route.LoaderArgs) {
-  const search = url.searchParams.get("q");
-  const category = url.searchParams.get("category");
+  const { search, category } = catalogParamsSchema.parse({
+    search: url.searchParams.get("q"),
+    category: url.searchParams.get("category"),
+  });
 
   const courses = buildCourseQuery(
     search,
