@@ -57,14 +57,22 @@ describe("openLessonForStudent", () => {
 
   it("keeps a completed Lesson completed when it is opened again", () => {
     open(course.user.id);
-    markLessonComplete(course.user.id, course.setup.id);
+    markLessonComplete(
+      course.user.id,
+      course.setup.id,
+      new Date("2026-01-01T00:00:00Z")
+    );
     const progress = open(course.user.id);
     expect(progress.lessonStatus).toBe(LessonProgressStatus.Completed);
   });
 
   it("maps progress across the whole Course", () => {
     open(course.user.id, true, course.intro);
-    markLessonComplete(course.user.id, course.intro.id);
+    markLessonComplete(
+      course.user.id,
+      course.intro.id,
+      new Date("2026-01-01T00:00:00Z")
+    );
     const progress = open(course.user.id, true, course.generics);
     expect(progress.lessonProgressMap).toEqual({
       [course.intro.id]: LessonProgressStatus.Completed,

@@ -14,7 +14,7 @@ export function LessonCompletion({
   nextLesson,
 }: {
   lessonId: number;
-  lessonStatus: string | null;
+  lessonStatus: LessonProgressStatus | null;
   courseSlug: string;
   nextLesson: NextLesson;
 }) {

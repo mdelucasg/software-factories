@@ -8,7 +8,7 @@ import {
 } from "~/db/schema";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 
-export function getLessonProgress(userId: number, lessonId: number) {
+function getLessonProgress(userId: number, lessonId: number) {
   return db
     .select()
     .from(lessonProgress)
@@ -21,7 +21,7 @@ export function getLessonProgress(userId: number, lessonId: number) {
     .get();
 }
 
-export function getLessonProgressForCourse(userId: number, courseId: number) {
+function getLessonProgressForCourse(userId: number, courseId: number) {
   const courseModules = db
     .select({ id: modules.id })
     .from(modules)
@@ -50,7 +50,11 @@ export function getLessonProgressForCourse(userId: number, courseId: number) {
     .all();
 }
 
-export function markLessonComplete(userId: number, lessonId: number) {
+export function markLessonComplete(
+  userId: number,
+  lessonId: number,
+  now: Date
+) {
   const existing = getLessonProgress(userId, lessonId);
 
   if (existing) {
@@ -58,7 +62,7 @@ export function markLessonComplete(userId: number, lessonId: number) {
       .update(lessonProgress)
       .set({
         status: LessonProgressStatus.Completed,
-        completedAt: new Date().toISOString(),
+        completedAt: now.toISOString(),
       })
       .where(eq(lessonProgress.id, existing.id))
       .returning()
@@ -71,13 +75,13 @@ export function markLessonComplete(userId: number, lessonId: number) {
       userId,
       lessonId,
       status: LessonProgressStatus.Completed,
-      completedAt: new Date().toISOString(),
+      completedAt: now.toISOString(),
     })
     .returning()
     .get();
 }
 
-export function markLessonInProgress(userId: number, lessonId: number) {
+function markLessonInProgress(userId: number, lessonId: number) {
   const existing = getLessonProgress(userId, lessonId);
 
   if (existing) {
@@ -103,7 +107,7 @@ export function markLessonInProgress(userId: number, lessonId: number) {
     .get();
 }
 
-export function getLastWatchPosition(userId: number, lessonId: number) {
+function getLastWatchPosition(userId: number, lessonId: number) {
   const lastEvent = db
     .select()
     .from(videoWatchEvents)
@@ -120,7 +124,7 @@ export function getLastWatchPosition(userId: number, lessonId: number) {
   return lastEvent?.positionSeconds ?? 0;
 }
 
-export function calculateWatchProgress(
+function calculateWatchProgress(
   userId: number,
   lessonId: number,
   videoDurationSeconds: number
@@ -144,10 +148,10 @@ export function calculateWatchProgress(
 }
 
 export type StudentLessonProgress = {
-  lessonStatus: string | null;
+  lessonStatus: LessonProgressStatus | null;
   lastWatchPosition: number;
   watchProgress: number;
-  lessonProgressMap: Record<number, string>;
+  lessonProgressMap: Record<number, LessonProgressStatus>;
 };
 
 const NO_PROGRESS: StudentLessonProgress = {
@@ -195,7 +199,7 @@ export function openLessonForStudent(input: {
   if (studentId === null || !canTake) return NO_PROGRESS;
 
   markLessonInProgress(studentId, lesson.id);
-  const lessonProgressMap: Record<number, string> = {};
+  const lessonProgressMap: Record<number, LessonProgressStatus> = {};
   for (const record of getLessonProgressForCourse(studentId, courseId)) {
     lessonProgressMap[record.lessonId] = record.status;
   }

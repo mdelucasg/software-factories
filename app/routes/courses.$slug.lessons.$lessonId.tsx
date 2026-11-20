@@ -287,7 +287,7 @@ const INTENT_HANDLERS: Record<string, (context: ActionContext) => unknown> = {
   }),
   "save-note": saveNoteIntent,
   "mark-complete": ({ personId, lessonId }) => {
-    markLessonComplete(personId, lessonId);
+    markLessonComplete(personId, lessonId, new Date());
     return { success: true };
   },
   "submit-quiz": submitQuizIntent,
