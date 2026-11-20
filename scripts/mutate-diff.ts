@@ -23,7 +23,7 @@
  * result.
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, statSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 /**
@@ -246,8 +246,46 @@ const mutate = targets.flatMap(({ file, lines }) =>
   lines ? lines.map((range) => `${file}:${range}`) : [file]
 );
 
+type MutationReport = {
+  files: Record<
+    string,
+    {
+      mutants: Array<{
+        status: string;
+        mutatorName: string;
+        replacement?: string;
+        location: { start: { line: number; column: number } };
+      }>;
+    }
+  >;
+};
+
+function printSurvivors(): void {
+  const reportPath = resolve(repoRoot, "reports/mutation/mutation.json");
+  if (!existsSync(reportPath)) return;
+  const report = JSON.parse(readFileSync(reportPath, "utf8")) as MutationReport;
+  const survivors: string[] = [];
+  for (const [file, data] of Object.entries(report.files)) {
+    for (const mutant of data.mutants) {
+      if (mutant.status !== "Survived" && mutant.status !== "NoCoverage") {
+        continue;
+      }
+      const { line, column } = mutant.location.start;
+      const replacement = (mutant.replacement ?? "").replace(/\s+/g, " ");
+      survivors.push(
+        `  ${file}:${line}:${column} [${mutant.status}] ${mutant.mutatorName} -> ${replacement}`
+      );
+    }
+  }
+  if (survivors.length === 0) return;
+  console.log(
+    `\nSurviving / uncovered mutants (${survivors.length}) — also saved in reports/mutation/mutation.json:\n${survivors.join("\n")}\n`
+  );
+}
+
 // Pass the list as one argument, not through a shell. A path that contains a
 // space or a shell character must not change the command.
+let exitCode = 0;
 try {
   execFileSync("npx", ["stryker", "run", "--mutate", mutate.join(",")], {
     cwd: repoRoot,
@@ -255,5 +293,7 @@ try {
   });
 } catch (error) {
   const status = (error as { status?: number }).status;
-  process.exit(typeof status === "number" ? status : 1);
+  exitCode = typeof status === "number" ? status : 1;
 }
+printSurvivors();
+if (exitCode !== 0) process.exit(exitCode);

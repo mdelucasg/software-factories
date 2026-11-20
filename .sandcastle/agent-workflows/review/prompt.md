@@ -17,11 +17,15 @@ line. You will be asked for them as structured output.
 Write your verdict on the branch, after your fixes, to /tmp/review-verdict.md:
 
     ## Standards: PASS | CHANGES REQUESTED
-    One line of reasoning, then the findings, worst first: each one fixed
-    (its commit) or left (its file and line), citing the rule by heading.
+    One line of reasoning, then each finding you fixed (with its commit SHA
+    and rule heading) and a count of findings left as inline comments (e.g.
+    "3 findings left as inline comments"). Do not repeat inline comments in
+    the verdict; only list an unfixed finding here if it has no diff line to
+    attach to.
 
     ## Spec: PASS | CHANGES REQUESTED
-    One line of reasoning, then the findings, fixed or left.
+    One line of reasoning, then each finding you fixed (with its commit SHA)
+    and a count of findings left as inline comments.
 
     ## Rules this review wanted and could not find
     Anything you wanted to fail the change for that no standard covers.

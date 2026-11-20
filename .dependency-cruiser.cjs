@@ -104,6 +104,14 @@ module.exports = {
         path: ["^app/db/index\\.ts$", "^node_modules/better-sqlite3/"],
       },
     },
+    {
+      name: "modules-no-components",
+      comment:
+        "Domain modules do not depend on UI components. Define shared types in the module and import them from the component instead.",
+      severity: "error",
+      from: { path: `^${R}/` },
+      to: { path: "^app/components/" },
+    },
   ],
   options: {
     doNotFollow: { path: "node_modules" },
