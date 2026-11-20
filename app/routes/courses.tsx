@@ -16,11 +16,18 @@ import {
 import { eq, like, and, or, sql, inArray } from "drizzle-orm";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, Search } from "lucide-react";
+import { AlertTriangle, Search } from "lucide-react";
 import { getCurrentUserId } from "~/lib/session";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice } from "~/lib/ppp";
 import { CourseCard, CourseCardSkeleton } from "~/components/course-card";
+import {
+  CatalogEmptyState,
+  CatalogHeader,
+  CatalogSummary,
+  CategoryChips,
+} from "~/components/course-catalog";
+import { describeCatalog } from "~/modules/course-catalog";
 
 function buildCourseQuery(
   search: string | null,
@@ -340,14 +347,20 @@ export async function loader({ request, url }: Route.LoaderArgs) {
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8">
-        <Skeleton className="h-9 w-48" />
-        <Skeleton className="mt-2 h-5 w-64" />
+      <div className="mb-8 border-b pb-8">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="mt-3 h-10 w-72" />
+        <Skeleton className="mt-3 h-5 w-96 max-w-full" />
       </div>
-      <div className="mb-8 flex flex-col gap-4 sm:flex-row">
+      <div className="mb-4 flex flex-col gap-4 sm:flex-row">
         <Skeleton className="h-10 flex-1" />
-        <Skeleton className="h-10 w-40" />
         <Skeleton className="h-10 w-20" />
+      </div>
+      <div className="mb-8 flex flex-wrap gap-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          // oxlint-disable-next-line react/no-array-index-key -- placeholders never reorder
+          <Skeleton key={i} className="h-8 w-24 rounded-full" />
+        ))}
       </div>
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 6 }).map((_, i) => (
@@ -365,42 +378,41 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
   const isSearching =
     navigation.state === "loading" &&
     navigation.location?.pathname === "/courses";
+  const catalog = describeCatalog({
+    courseCount: courses.length,
+    categories,
+    filters: { search, category },
+  });
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Browse Courses</h1>
-        <p className="mt-1 text-muted-foreground">
-          Find courses to expand your skills
-        </p>
-      </div>
+      <CatalogHeader />
 
-      {/* Search and Filter */}
-      <Form method="get" className="mb-8 flex flex-col gap-4 sm:flex-row">
+      {/* Search */}
+      <Form method="get" className="mb-4 flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
             name="q"
+            key={search ?? ""}
             defaultValue={search ?? ""}
             placeholder="Search courses..."
             className="h-10 w-full rounded-md border border-input bg-background pl-10 pr-4 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
-        <select
-          name="category"
-          defaultValue={category ?? ""}
-          className="h-10 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="">All Categories</option>
-          {categories.map((cat) => (
-            <option key={cat.id} value={cat.slug}>
-              {cat.name}
-            </option>
-          ))}
-        </select>
-        <Button type="submit">Search</Button>
+        {category && <input type="hidden" name="category" value={category} />}
+        <Button type="submit" className="h-10">
+          Search
+        </Button>
       </Form>
+
+      <CategoryChips links={catalog.categoryLinks} />
+      <CatalogSummary
+        summary={catalog.summary}
+        isFiltered={catalog.isFiltered}
+        clearHref={catalog.clearHref}
+      />
 
       {/* Course Grid */}
       {isSearching ? (
@@ -411,15 +423,10 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
           ))}
         </div>
       ) : courses.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <BookOpen className="mb-4 size-12 text-muted-foreground/50" />
-          <h2 className="text-lg font-medium">No courses found</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {search || category
-              ? "Try adjusting your search or filters."
-              : "No published courses are available yet."}
-          </p>
-        </div>
+        <CatalogEmptyState
+          isFiltered={catalog.isFiltered}
+          clearHref={catalog.clearHref}
+        />
       ) : (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {courses.map((course) => (
