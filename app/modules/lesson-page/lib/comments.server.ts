@@ -1,18 +1,12 @@
 import { getCourseForLesson } from "./course.server";
+import type { CommentAuthor, RenderedComment } from "./comment-types";
 import { renderComment } from "~/lib/comment-markdown.server";
 import { markdown, type Markdown } from "~/lib/text";
-import { type RenderedComment } from "~/components/comment-thread";
 import { db } from "~/db";
 import { comments, users, UserRole } from "~/db/schema";
 import { asc, eq } from "drizzle-orm";
 
-export type CommentAuthor = {
-  id: number;
-  name: string;
-  avatarUrl: string | null;
-  isInstructor: boolean;
-  isPlatformAdmin: boolean;
-};
+export type { CommentAuthor };
 
 export type ThreadComment = {
   id: number;

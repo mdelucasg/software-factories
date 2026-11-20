@@ -8,3 +8,4 @@ export type {
   QuestionResult,
   QuizResult,
 } from "./lib/quiz-types";
+export type { CommentAuthor, RenderedComment } from "./lib/comment-types";
