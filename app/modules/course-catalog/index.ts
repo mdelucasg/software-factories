@@ -1,7 +1,6 @@
 import {
-  CATALOG_PATH,
-  catalogHref,
   categoryFilterLinks,
+  isFiltered,
   resultsSummary,
   type CatalogCategory,
   type CatalogFilters,
@@ -22,12 +21,10 @@ export function describeCatalog({
   categoryLinks: CategoryFilterLink[];
   summary: string;
   isFiltered: boolean;
-  clearHref: string;
 } {
   return {
     categoryLinks: categoryFilterLinks(categories, filters),
     summary: resultsSummary(courseCount, filters, categories),
-    isFiltered: catalogHref(filters) !== CATALOG_PATH,
-    clearHref: CATALOG_PATH,
+    isFiltered: isFiltered(filters),
   };
 }

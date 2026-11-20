@@ -97,7 +97,7 @@ describe("describeCatalog", () => {
     });
   });
 
-  describe("isFiltered and clearHref", () => {
+  describe("isFiltered", () => {
     it("is not filtered without a search or category", () => {
       expect(describeWith(4, null, null).isFiltered).toBe(false);
       expect(describeWith(4, " ", "").isFiltered).toBe(false);
@@ -109,10 +109,6 @@ describe("describeCatalog", () => {
 
     it("is filtered by a category alone", () => {
       expect(describeWith(1, null, "design").isFiltered).toBe(true);
-    });
-
-    it("clears back to the unfiltered catalog", () => {
-      expect(describeWith(1, "node", "design").clearHref).toBe("/courses");
     });
   });
 });

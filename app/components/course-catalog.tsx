@@ -44,17 +44,15 @@ export function CategoryChips({ links }: { links: CategoryFilterLink[] }) {
   );
 }
 
-type CatalogStatusProps = {
-  summary: string;
-  isFiltered: boolean;
-  clearHref: string;
-};
+const CLEAR_FILTERS_HREF = "/courses";
 
 export function CatalogSummary({
   summary,
   isFiltered,
-  clearHref,
-}: CatalogStatusProps) {
+}: {
+  summary: string;
+  isFiltered: boolean;
+}) {
   return (
     <div className="mb-6 flex items-baseline gap-3 text-sm">
       <p className="font-medium" aria-live="polite">
@@ -62,7 +60,7 @@ export function CatalogSummary({
       </p>
       {isFiltered && (
         <Link
-          to={clearHref}
+          to={CLEAR_FILTERS_HREF}
           className="text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
         >
           Clear filters
@@ -72,10 +70,7 @@ export function CatalogSummary({
   );
 }
 
-export function CatalogEmptyState({
-  isFiltered,
-  clearHref,
-}: Omit<CatalogStatusProps, "summary">) {
+export function CatalogEmptyState({ isFiltered }: { isFiltered: boolean }) {
   return (
     <div className="flex items-start gap-4 rounded-lg border border-dashed p-8">
       <BookOpen className="size-10 shrink-0 text-muted-foreground/50" />
@@ -88,7 +83,7 @@ export function CatalogEmptyState({
         </p>
         {isFiltered && (
           <Button asChild variant="outline" size="sm" className="mt-4">
-            <Link to={clearHref}>Clear filters</Link>
+            <Link to={CLEAR_FILTERS_HREF}>Clear filters</Link>
           </Button>
         )}
       </div>

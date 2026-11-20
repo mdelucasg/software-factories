@@ -18,6 +18,10 @@ function clean(value: string | null): string | null {
 
 export const CATALOG_PATH = "/courses";
 
+export function isFiltered(filters: CatalogFilters): boolean {
+  return clean(filters.search) !== null || clean(filters.category) !== null;
+}
+
 export function catalogHref(filters: CatalogFilters): string {
   const params = new URLSearchParams();
   const search = clean(filters.search);
