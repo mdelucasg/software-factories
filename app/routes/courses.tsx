@@ -14,22 +14,21 @@ import {
   LessonProgressStatus,
 } from "~/db/schema";
 import { eq, like, and, or, sql, inArray } from "drizzle-orm";
-import {
-  Card,
-  CardContent,
-  CardFooter,
-  CardHeader,
-} from "~/components/ui/card";
+import { z } from "zod";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, Search } from "lucide-react";
-import { CourseImage } from "~/components/course-image";
-import { UserAvatar } from "~/components/user-avatar";
+import { AlertTriangle, Search } from "lucide-react";
 import { getCurrentUserId } from "~/lib/session";
-import { formatPrice } from "~/lib/utils";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice } from "~/lib/ppp";
-import { StarRating } from "~/components/star-rating";
+import { CourseCard, CourseCardSkeleton } from "~/components/course-card";
+import {
+  CatalogEmptyState,
+  CatalogHeader,
+  CatalogSummary,
+  CategoryChips,
+} from "~/components/course-catalog";
+import { describeCatalog } from "~/modules/course-catalog";
 
 function buildCourseQuery(
   search: string | null,
@@ -282,9 +281,21 @@ export function meta() {
   ];
 }
 
+const optionalFilter = z
+  .string()
+  .nullable()
+  .transform((value) => value?.trim() || null);
+
+const catalogParamsSchema = z.object({
+  search: optionalFilter,
+  category: optionalFilter,
+});
+
 export async function loader({ request, url }: Route.LoaderArgs) {
-  const search = url.searchParams.get("q");
-  const category = url.searchParams.get("category");
+  const { search, category } = catalogParamsSchema.parse({
+    search: url.searchParams.get("q"),
+    category: url.searchParams.get("category"),
+  });
 
   const courses = buildCourseQuery(
     search,
@@ -346,39 +357,25 @@ export async function loader({ request, url }: Route.LoaderArgs) {
   };
 }
 
-function CourseCardSkeleton() {
-  return (
-    <Card className="h-full">
-      <Skeleton className="aspect-video rounded-b-none rounded-t-lg" />
-      <CardHeader>
-        <Skeleton className="mb-1 h-3 w-16" />
-        <Skeleton className="h-5 w-3/4" />
-        <Skeleton className="mt-1 h-4 w-24" />
-      </CardHeader>
-      <CardContent>
-        <Skeleton className="mb-1 h-3 w-full" />
-        <Skeleton className="h-3 w-2/3" />
-      </CardContent>
-      <CardFooter className="flex items-center justify-between">
-        <Skeleton className="h-3 w-20" />
-        <Skeleton className="h-3 w-16" />
-      </CardFooter>
-    </Card>
-  );
-}
-
 export function HydrateFallback() {
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8">
-        <Skeleton className="h-9 w-48" />
-        <Skeleton className="mt-2 h-5 w-64" />
+      <div className="mb-8 border-b pb-8">
+        <Skeleton className="h-4 w-28" />
+        <Skeleton className="mt-3 h-10 w-72" />
+        <Skeleton className="mt-3 h-5 w-96 max-w-full" />
       </div>
-      <div className="mb-8 flex flex-col gap-4 sm:flex-row">
+      <div className="mb-4 flex flex-col gap-4 sm:flex-row">
         <Skeleton className="h-10 flex-1" />
-        <Skeleton className="h-10 w-40" />
         <Skeleton className="h-10 w-20" />
       </div>
+      <div className="mb-6 flex flex-wrap gap-2">
+        {Array.from({ length: 5 }).map((_, i) => (
+          // oxlint-disable-next-line react/no-array-index-key -- placeholders never reorder
+          <Skeleton key={i} className="h-8 w-24 rounded-full" />
+        ))}
+      </div>
+      <Skeleton className="mb-6 h-5 w-32" />
       <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         {Array.from({ length: 6 }).map((_, i) => (
           // oxlint-disable-next-line react/no-array-index-key -- placeholders never reorder
@@ -395,42 +392,39 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
   const isSearching =
     navigation.state === "loading" &&
     navigation.location?.pathname === "/courses";
+  const catalog = describeCatalog({
+    courseCount: courses.length,
+    categories,
+    filters: { search, category },
+  });
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Browse Courses</h1>
-        <p className="mt-1 text-muted-foreground">
-          Find courses to expand your skills
-        </p>
-      </div>
+      <CatalogHeader />
 
-      {/* Search and Filter */}
-      <Form method="get" className="mb-8 flex flex-col gap-4 sm:flex-row">
+      <Form method="get" className="mb-4 flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
             name="q"
+            key={search ?? ""}
             defaultValue={search ?? ""}
             placeholder="Search courses..."
             className="h-10 w-full rounded-md border border-input bg-background pl-10 pr-4 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
-        <select
-          name="category"
-          defaultValue={category ?? ""}
-          className="h-10 rounded-md border border-input bg-background px-3 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <option value="">All Categories</option>
-          {categories.map((cat) => (
-            <option key={cat.id} value={cat.slug}>
-              {cat.name}
-            </option>
-          ))}
-        </select>
-        <Button type="submit">Search</Button>
+        {category && <input type="hidden" name="category" value={category} />}
+        <Button type="submit" className="h-10">
+          Search
+        </Button>
       </Form>
+
+      <CategoryChips links={catalog.categoryLinks} />
+      <CatalogSummary
+        summary={catalog.summary}
+        isFiltered={catalog.isFiltered}
+      />
 
       {/* Course Grid */}
       {isSearching ? (
@@ -441,95 +435,15 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
           ))}
         </div>
       ) : courses.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <BookOpen className="mb-4 size-12 text-muted-foreground/50" />
-          <h2 className="text-lg font-medium">No courses found</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {search || category
-              ? "Try adjusting your search or filters."
-              : "No published courses are available yet."}
-          </p>
-        </div>
+        <CatalogEmptyState isFiltered={catalog.isFiltered} />
       ) : (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {courses.map((course) => (
-            <Link
+            <CourseCard
               key={course.id}
-              to={`/courses/${course.slug}`}
-              className="group"
-            >
-              <Card className="h-full overflow-hidden pt-0 transition-shadow group-hover:shadow-md">
-                <div className="aspect-video overflow-hidden">
-                  <CourseImage
-                    src={course.coverImageUrl}
-                    alt={course.title}
-                    className="h-full w-full object-cover transition-transform group-hover:scale-105"
-                  />
-                </div>
-                <CardHeader>
-                  <div className="mb-1 flex items-center gap-2 text-xs font-medium">
-                    <span className="text-primary">{course.categoryName}</span>
-                    {currentUserId !== null &&
-                      course.instructorId === currentUserId && (
-                        <span className="inline-flex items-center rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
-                          Your Course
-                        </span>
-                      )}
-                  </div>
-                  <h3 className="text-lg font-semibold leading-tight group-hover:text-primary">
-                    {course.title}
-                  </h3>
-                  <StarRating
-                    average={course.ratingAverage}
-                    count={course.ratingCount}
-                    className="mt-1"
-                  />
-                </CardHeader>
-                <CardContent>
-                  <p className="line-clamp-2 text-sm text-muted-foreground">
-                    {course.description}
-                  </p>
-                </CardContent>
-                {course.progress !== null && course.progress > 0 && (
-                  <CardContent className="pt-0">
-                    <div className="mb-1 flex items-center justify-between text-xs">
-                      <span className="text-muted-foreground">
-                        {course.completedLessons} / {course.lessonCount} lessons
-                      </span>
-                      <span className="font-medium">{course.progress}%</span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${course.progress}%` }}
-                      />
-                    </div>
-                  </CardContent>
-                )}
-                <CardFooter className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1.5">
-                    <UserAvatar
-                      name={course.instructorName}
-                      avatarUrl={course.instructorAvatarUrl}
-                      className="size-5"
-                    />
-                    {course.instructorName}
-                  </span>
-                  <span className="font-semibold text-foreground">
-                    {course.pppPrice < course.price ? (
-                      <span className="flex items-center gap-1.5">
-                        <span className="text-xs line-through text-muted-foreground font-normal">
-                          {formatPrice(course.price)}
-                        </span>
-                        {formatPrice(course.pppPrice)}
-                      </span>
-                    ) : (
-                      formatPrice(course.price)
-                    )}
-                  </span>
-                </CardFooter>
-              </Card>
-            </Link>
+              course={course}
+              currentUserId={currentUserId}
+            />
           ))}
         </div>
       )}
