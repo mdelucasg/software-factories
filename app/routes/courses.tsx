@@ -388,7 +388,6 @@ export default function CourseCatalog({ loaderData }: Route.ComponentProps) {
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
       <CatalogHeader />
 
-      {/* Search */}
       <Form method="get" className="mb-4 flex flex-col gap-4 sm:flex-row">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
