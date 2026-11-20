@@ -9,9 +9,8 @@ vi.mock("~/db", () => ({
 }));
 
 import * as schema from "~/db/schema";
-import { eq } from "drizzle-orm";
 import { findLessonComment, getRenderedThread } from "../index.server";
-import { addComment, freshDb, seedCourse } from "./fixtures";
+import { addComment, freshDb, removeComment, seedCourse } from "./fixtures";
 
 let course: ReturnType<typeof seedCourse>;
 
@@ -19,22 +18,17 @@ beforeEach(() => {
   course = seedCourse(freshDb(holder));
 });
 
-function softDelete(commentId: number) {
-  holder.db
-    ?.update(schema.comments)
-    .set({ deletedAt: new Date(2026, 9, 7).toISOString() })
-    .where(eq(schema.comments.id, commentId))
-    .run();
-}
-
 describe("getRenderedThread", () => {
   it("nests replies under their question and renders the bodies", async () => {
-    const question = addComment(holder.db as NonNullable<typeof holder.db>, {
-      lessonId: course.setup.id,
-      userId: course.user.id,
-      body: "Is **this** right?",
-    });
-    addComment(holder.db as NonNullable<typeof holder.db>, {
+    const question = await addComment(
+      holder.db as NonNullable<typeof holder.db>,
+      {
+        lessonId: course.setup.id,
+        userId: course.user.id,
+        body: "Is **this** right?",
+      }
+    );
+    await addComment(holder.db as NonNullable<typeof holder.db>, {
       lessonId: course.setup.id,
       userId: course.instructor.id,
       body: "Yes",
@@ -52,29 +46,38 @@ describe("getRenderedThread", () => {
   });
 
   it("drops a deleted question once it has no replies", async () => {
-    const question = addComment(holder.db as NonNullable<typeof holder.db>, {
-      lessonId: course.setup.id,
-      userId: course.user.id,
-      body: "Never mind",
-    });
-    softDelete(question.id);
+    const question = await addComment(
+      holder.db as NonNullable<typeof holder.db>,
+      {
+        lessonId: course.setup.id,
+        userId: course.user.id,
+        body: "Never mind",
+      }
+    );
+    await removeComment(
+      holder.db as NonNullable<typeof holder.db>,
+      question.id
+    );
     expect(await getRenderedThread(course.setup.id)).toEqual([]);
   });
 
   it("keeps a deleted question with replies, with its body blanked", async () => {
     const db = holder.db as NonNullable<typeof holder.db>;
-    const question = addComment(db, {
+    const question = await addComment(db, {
       lessonId: course.setup.id,
       userId: course.user.id,
       body: "Secret",
     });
-    addComment(db, {
+    await addComment(db, {
       lessonId: course.setup.id,
       userId: course.instructor.id,
       body: "Answer",
       parentId: question.id,
     });
-    softDelete(question.id);
+    await removeComment(
+      holder.db as NonNullable<typeof holder.db>,
+      question.id
+    );
 
     const [thread] = await getRenderedThread(course.setup.id);
     expect(thread.deleted).toBe(true);
@@ -84,36 +87,42 @@ describe("getRenderedThread", () => {
 });
 
 describe("findLessonComment", () => {
-  it("finds a comment on the Lesson and not one on another Lesson", () => {
-    const comment = addComment(holder.db as NonNullable<typeof holder.db>, {
-      lessonId: course.setup.id,
-      userId: course.user.id,
-      body: "Hi",
-    });
+  it("finds a comment on the Lesson and not one on another Lesson", async () => {
+    const comment = await addComment(
+      holder.db as NonNullable<typeof holder.db>,
+      {
+        lessonId: course.setup.id,
+        userId: course.user.id,
+        body: "Hi",
+      }
+    );
     expect(findLessonComment(course.setup.id, comment.id)?.id).toBe(comment.id);
     expect(findLessonComment(course.intro.id, comment.id)).toBeUndefined();
   });
 
   it("leaves out the Lesson's other threads' replies and keeps order", async () => {
     const db = holder.db as NonNullable<typeof holder.db>;
-    const first = addComment(db, {
+    const first = await addComment(db, {
       lessonId: course.setup.id,
       userId: course.user.id,
       body: "First",
     });
-    addComment(db, {
+    await addComment(db, {
       lessonId: course.setup.id,
       userId: course.user.id,
       body: "Second",
     });
-    const deletedReply = addComment(db, {
+    const deletedReply = await addComment(db, {
       lessonId: course.setup.id,
       userId: course.user.id,
       body: "Gone",
       parentId: first.id,
     });
-    softDelete(deletedReply.id);
-    addComment(db, {
+    await removeComment(
+      holder.db as NonNullable<typeof holder.db>,
+      deletedReply.id
+    );
+    await addComment(db, {
       lessonId: course.intro.id,
       userId: course.user.id,
       body: "Elsewhere",
@@ -136,8 +145,12 @@ describe("findLessonComment", () => {
       })
       .returning()
       .get();
-    addComment(db, { lessonId: course.setup.id, userId: admin.id, body: "Hi" });
-    addComment(db, {
+    await addComment(db, {
+      lessonId: course.setup.id,
+      userId: admin.id,
+      body: "Hi",
+    });
+    await addComment(db, {
       lessonId: course.setup.id,
       userId: course.user.id,
       body: "Yo",

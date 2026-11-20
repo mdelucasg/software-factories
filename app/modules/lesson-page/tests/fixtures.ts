@@ -1,5 +1,6 @@
 import * as schema from "~/db/schema";
-import { markdown } from "~/lib/text";
+import { createComment, deleteComment } from "~/lib/comments.server";
+import { fakeNotifications } from "~/lib/notifications.fake.server";
 import { createTestDb, seedBaseData, type TestDb } from "~/test/setup";
 
 /**
@@ -115,17 +116,33 @@ export function seedQuiz(db: TestDb, lessonId: number, count = 3) {
   return { quiz, questions };
 }
 
-export function addComment(
+/** Posts a Discussion Question, or a Discussion Reply under `parentId`. */
+export async function addComment(
   db: TestDb,
   comment: { lessonId: number; userId: number; body: string; parentId?: number }
 ) {
-  return db
-    .insert(schema.comments)
-    .values({
-      ...comment,
-      body: markdown(comment.body),
-      createdAt: new Date(2026, 9, 6).toISOString(),
-    })
-    .returning()
-    .get();
+  const result = await createComment(
+    db,
+    comment.userId,
+    comment.lessonId,
+    comment.parentId ?? null,
+    comment.body,
+    new Date(2026, 9, 6),
+    fakeNotifications()
+  );
+  if (!result.ok) throw new Error(result.error);
+  return result.comment;
+}
+
+/** Soft-deletes a comment, as a moderator would. */
+export async function removeComment(db: TestDb, commentId: number) {
+  const result = await deleteComment(
+    db,
+    commentId,
+    0,
+    true,
+    new Date(2026, 9, 7),
+    fakeNotifications()
+  );
+  if (!result.ok) throw new Error(result.error);
 }
