@@ -24,7 +24,6 @@ export function LessonBody({
 
   return (
     <>
-      {/* YouTube Video */}
       {lesson.videoUrl && (
         <YouTubePlayer
           videoUrl={lesson.videoUrl}
@@ -39,7 +38,6 @@ export function LessonBody({
         />
       )}
 
-      {/* Lesson Content */}
       {contentHtml && (
         <div
           className="prose prose-neutral dark:prose-invert mb-8 max-w-none"

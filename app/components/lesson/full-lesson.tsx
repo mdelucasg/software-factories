@@ -20,7 +20,6 @@ export function FullLesson({ data }: { data: FullLessonData }) {
 
   return (
     <div className="flex">
-      {/* Curriculum Sidebar */}
       <CurriculumSidebar
         course={course}
         curriculum={data.curriculum}
@@ -76,7 +75,6 @@ function LessonActivity({ data }: { data: FullLessonData }) {
 
   return (
     <>
-      {/* Quiz Section */}
       {data.quiz && (
         <QuizSection
           quiz={data.quiz}
@@ -87,7 +85,6 @@ function LessonActivity({ data }: { data: FullLessonData }) {
         />
       )}
 
-      {/* Mark Complete / Up Next */}
       <LessonCompletion
         lessonId={data.lesson.id}
         lessonStatus={data.lessonStatus}
