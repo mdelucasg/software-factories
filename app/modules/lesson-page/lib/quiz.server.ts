@@ -72,11 +72,7 @@ function correctOptionsFor(quizId: number): Map<number, number> {
       and(eq(quizQuestions.quizId, quizId), eq(quizOptions.isCorrect, true))
     )
     .all();
-  const correct = new Map<number, number>();
-  for (const row of rows) {
-    if (!correct.has(row.questionId)) correct.set(row.questionId, row.optionId);
-  }
-  return correct;
+  return new Map(rows.map((row) => [row.questionId, row.optionId]));
 }
 
 function markQuestions(
