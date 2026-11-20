@@ -39,11 +39,17 @@ export function LessonDiscussion({
       <CardContent className="p-6">
         <Tabs defaultValue="discussion" className="gap-6">
           <LessonDiscussionTabs
-            commentCount={comments.length}
+            commentCount={countComments(comments)}
             hasNote={note !== null}
           />
 
-          <TabsContent value="discussion">
+          {/* Both panels stay mounted so switching tabs keeps a half-typed
+              note or reply; Radix unmounts inactive panels otherwise. */}
+          <TabsContent
+            value="discussion"
+            forceMount
+            className="data-[state=inactive]:hidden"
+          >
             <CommentThreadBody
               comments={comments}
               currentUserId={currentUserId}
@@ -53,12 +59,24 @@ export function LessonDiscussion({
             />
           </TabsContent>
 
-          <TabsContent value="notes">
+          <TabsContent
+            value="notes"
+            forceMount
+            className="data-[state=inactive]:hidden"
+          >
             <NoteEditor key={lessonId} note={note} />
           </TabsContent>
         </Tabs>
       </CardContent>
     </Card>
+  );
+}
+
+function countComments(comments: RenderedComment[]): number {
+  return comments.reduce(
+    (total, comment) =>
+      total + (comment.deleted ? 0 : 1) + countComments(comment.replies),
+    0
   );
 }
 
@@ -97,12 +115,20 @@ function LessonDiscussionTabs({
 function NoteEditor({ note }: { note: SavedNote }) {
   const fetcher = useFetcher<{ ok: boolean; error?: string }>();
   const [draft, setDraft] = useState(note?.body ?? "");
+  const [submittedDraft, setSubmittedDraft] = useState<string | null>(null);
   const status = describeNoteDraft(note?.body ?? null, draft);
   const isSaving = fetcher.state !== "idle";
-  const error = isSaving ? undefined : fetcher.data?.error;
+  // A failed save's error describes the draft that was sent; once the
+  // Student edits it, the error no longer applies.
+  const error =
+    isSaving || draft !== submittedDraft ? undefined : fetcher.data?.error;
 
   return (
-    <fetcher.Form method="post" className="space-y-3">
+    <fetcher.Form
+      method="post"
+      className="space-y-3"
+      onSubmit={() => setSubmittedDraft(draft)}
+    >
       <input type="hidden" name="intent" value="save-note" />
       <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
         <Lock className="size-3.5" />
