@@ -1,0 +1,166 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init-databases.sh:/docker-entrypoint-initdb.d/init-databases.sh:ro
+    networks:
+      - control-plane
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hatchet"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  hatchet-lite:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:${HATCHET_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://hatchet:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/hatchet?sslmode=disable
+      SERVER_MSGQUEUE_KIND: postgres
+      SERVER_DEFAULT_ENGINE_VERSION: V1
+      SERVER_AUTH_COOKIE_INSECURE: "t"
+      SERVER_GRPC_BIND_ADDRESS: "0.0.0.0"
+      SERVER_GRPC_PORT: "7077"
+      SERVER_GRPC_INSECURE: "t"
+      SERVER_GRPC_BROADCAST_ADDRESS: "hatchet-lite:7077"
+      SERVER_URL: "http://localhost:8888"
+    ports:
+      - "127.0.0.1:8888:8888"
+      - "127.0.0.1:7077:7077"
+    volumes:
+      - hatchet_lite_config:/config
+    networks:
+      - control-plane
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://localhost:8733/ready || wget -qO- http://localhost:8733/ready || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  hatchet-token-init:
+    image: ghcr.io/hatchet-dev/hatchet/hatchet-lite:${HATCHET_IMAGE_TAG:-latest}
+    restart: "no"
+    depends_on:
+      hatchet-lite:
+        condition: service_healthy
+    environment:
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:-}
+      HATCHET_TENANT_ID: ${HATCHET_TENANT_ID:-707d0855-80ab-4e1f-a156-f1c4546cbf52}
+    entrypoint:
+      - /bin/sh
+      - -eu
+      - -c
+      - |
+        if [ -n "$$HATCHET_CLIENT_TOKEN" ]; then
+          printf '%s' "$$HATCHET_CLIENT_TOKEN" > /shared/hatchet.token
+        elif [ ! -s /shared/hatchet.token ]; then
+          /hatchet-admin token create --config /config --tenant-id "$$HATCHET_TENANT_ID" \
+            | tr -d '\r\n' > /shared/hatchet.token
+        fi
+        chmod 644 /shared/hatchet.token
+    volumes:
+      - hatchet_lite_config:/config:ro
+      - hatchet_shared_token:/shared
+    networks:
+      - control-plane
+
+  webhook-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "dist/webhook/main.js"]
+    depends_on:
+      hatchet-lite:
+        condition: service_healthy
+      hatchet-token-init:
+        condition: service_completed_successfully
+    environment:
+      WEBHOOK_PORT: "3000"
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:?GITHUB_WEBHOOK_SECRET is required}
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:-}
+      HATCHET_CLIENT_TOKEN_FILE: /shared/hatchet.token
+      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
+      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
+    ports:
+      - "127.0.0.1:${WEBHOOK_PORT:-3000}:3000"
+    volumes:
+      - hatchet_shared_token:/shared:ro
+    networks:
+      - control-plane
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  factory-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "dist/orchestrator/worker-main.js"]
+    depends_on:
+      hatchet-lite:
+        condition: service_healthy
+      hatchet-token-init:
+        condition: service_completed_successfully
+    environment:
+      HATCHET_CLIENT_TOKEN: ${HATCHET_CLIENT_TOKEN:-}
+      HATCHET_CLIENT_TOKEN_FILE: /shared/hatchet.token
+      HATCHET_CLIENT_HOST_PORT: ${HATCHET_CLIENT_HOST_PORT:-hatchet-lite:7077}
+      HATCHET_CLIENT_TLS_STRATEGY: ${HATCHET_CLIENT_TLS_STRATEGY:-none}
+      HATCHET_WORKER_SLOTS: ${HATCHET_WORKER_SLOTS:-4}
+      HATCHET_CLIENT_WORKER_HEALTHCHECK_ENABLED: "true"
+      HATCHET_CLIENT_WORKER_HEALTHCHECK_PORT: "8001"
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_INSTALLATION_ID: ${GITHUB_APP_INSTALLATION_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+    volumes:
+      - hatchet_shared_token:/shared:ro
+    networks:
+      - control-plane
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8001/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+
+networks:
+  control-plane:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  hatchet_lite_config:
+  hatchet_shared_token:

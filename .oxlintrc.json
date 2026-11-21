@@ -5,7 +5,13 @@
   "categories": {
     "correctness": "error"
   },
-  "ignorePatterns": ["drizzle/**", ".agents/**", ".claude/**"],
+  "ignorePatterns": [
+    "drizzle/**",
+    ".agents/**",
+    ".claude/**",
+    "software-factory/node_modules/**",
+    "software-factory/dist/**"
+  ],
   "rules": {
     // Correctness rules that go beyond the coding standards.
     "react/set-state-in-effect": "off",
@@ -95,6 +101,7 @@
         "app/root.tsx",
         "app/routes.ts",
         "*.config.*",
+        "**/*.config.*",
         "*.conf.*",
         "lint-rules/**"
       ],
@@ -109,7 +116,7 @@
       }
     },
     {
-      "files": ["scripts/**", "request-logger/**"],
+      "files": ["scripts/**", "request-logger/**", "software-factory/**"],
       "rules": {
         "no-console": "off"
       }

@@ -4,3 +4,7 @@ drizzle/
 # Skills are installed from upstream (see skills-lock.json)
 .agents/
 .claude/skills/
+
+# Software factory dependencies and build output
+software-factory/node_modules/
+software-factory/dist/
