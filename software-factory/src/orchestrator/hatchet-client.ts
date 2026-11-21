@@ -1,6 +1,7 @@
 import { Hatchet } from "@hatchet-dev/typescript-sdk";
 import type { HatchetConnectionConfig } from "../shared/config.js";
 import type { FactoryRunInput } from "../shared/types.js";
+import type { HatchetCronClient } from "./crons.js";
 import type { WorkflowDispatcher } from "./ports.js";
 import { FACTORY_RUN_WORKFLOW_NAME } from "./workflows.js";
 
@@ -32,4 +33,11 @@ export const createHatchetDispatcher = (
     const runId = await runRef.getWorkflowRunId();
     return { runId };
   },
+});
+
+export const createHatchetCronClient = (
+  hatchet: Hatchet
+): HatchetCronClient => ({
+  list: async (query) => hatchet.crons.list(query),
+  create: async (workflow, cron) => hatchet.crons.create(workflow, cron),
 });

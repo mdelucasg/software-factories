@@ -39,3 +39,20 @@ export type FactoryRunOutput = {
   executedAt: string;
   summary: string;
 };
+
+export type ScheduledWakeupInput = {
+  workflow: FactoryWorkflowName;
+  concurrencyKey: string;
+  trigger: "cron";
+  scheduleName: string;
+  repositoryFullName?: string;
+};
+
+export type ScheduledWakeupOutput = {
+  status: "completed" | "failed";
+  workflow: FactoryWorkflowName;
+  concurrencyKey: string;
+  scheduleName: string;
+  executedAt: string;
+  summary: string;
+};
