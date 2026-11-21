@@ -48,6 +48,7 @@ const config = {
     // EISDIR error if this pattern is absent.
     ".claude/**",
     ".agents/**",
+    "software-factory/**",
   ],
   tempDirName: ".stryker-tmp",
 };
