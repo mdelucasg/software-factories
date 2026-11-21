@@ -12,7 +12,9 @@
     "check": "npm run typecheck && npm run test",
     "start:gateway": "node dist/webhook/main.js",
     "start:worker": "node dist/orchestrator/worker-main.js",
-    "smoke:skeleton": "bash scripts/smoke-skeleton.sh"
+    "start:egress-proxy": "node dist/egress/main.js",
+    "smoke:skeleton": "bash scripts/smoke-skeleton.sh",
+    "smoke:egress": "bash scripts/smoke-egress.sh"
   },
   "dependencies": {
     "@hatchet-dev/typescript-sdk": "^1.47.4",

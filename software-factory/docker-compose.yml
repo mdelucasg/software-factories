@@ -156,8 +156,40 @@ services:
       retries: 15
       start_period: 10s
 
+  egress-proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: ["node", "dist/egress/main.js"]
+    environment:
+      EGRESS_PROXY_PORT: "3128"
+      EGRESS_HEALTH_PORT: "3129"
+      EGRESS_ALLOWLIST_DOMAINS: ${EGRESS_ALLOWLIST_DOMAINS:-api.anthropic.com,registry.npmjs.org}
+      EGRESS_ALLOWED_PORTS: ${EGRESS_ALLOWED_PORTS:-80,443}
+    networks:
+      - sandbox-isolated
+      - egress-external
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3129/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
 networks:
   control-plane:
+    driver: bridge
+  sandbox-isolated:
+    driver: bridge
+    internal: true
+  egress-external:
     driver: bridge
 
 volumes:
