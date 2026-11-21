@@ -28,6 +28,7 @@ const IssueLabeledPayloadSchema = z.object({
   issue: z.object({
     number: z.number().int().positive(),
     title: z.string(),
+    pull_request: z.unknown().optional(),
   }),
   repository: RepositorySchema,
 });
@@ -63,31 +64,44 @@ export type RouteWebhookResult =
   | { kind: "ignore"; reason: string }
   | { kind: "invalid"; reason: string };
 
-const ISSUE_LABEL_WORKFLOWS: Record<string, FactoryWorkflowName> = {
-  "agent:explore": "agent-explore",
-  "agent:implement": "agent-implement",
-  "agent:implement-spec": "agent-implement-spec",
-};
+const ISSUE_LABEL_WORKFLOWS = new Map<string, FactoryWorkflowName>([
+  ["agent:explore", "agent-explore"],
+  ["agent:implement", "agent-implement"],
+  ["agent:implement-spec", "agent-implement-spec"],
+]);
 
-const PR_LABEL_WORKFLOWS: Record<string, FactoryWorkflowName> = {
-  "agent:review": "agent-review",
-};
+const PR_LABEL_WORKFLOWS = new Map<string, FactoryWorkflowName>([
+  ["agent:review", "agent-review"],
+]);
 
-const computeIssueConcurrencyKey = (
+export const deriveConcurrencyKey = (
   workflow: FactoryWorkflowName,
-  issueNumber: number
+  subjectNumber: number
 ): string => {
   if (workflow === "agent-implement") {
-    return `agent-implement-issue-${issueNumber}`;
+    return `agent-implement-issue-${subjectNumber}`;
+  }
+  if (workflow === "agent-review") {
+    return `agent-review-pr-${subjectNumber}`;
   }
   return workflow;
 };
+
+const mapRepository = (
+  repository: z.infer<typeof RepositorySchema>
+): FactoryRunInput["repository"] => ({
+  owner: repository.owner.login,
+  name: repository.name,
+  fullName: repository.full_name,
+  cloneUrl: repository.clone_url,
+  defaultBranch: repository.default_branch,
+});
 
 const routeIssueEvent = (
   input: RouteWebhookInput,
   labelName: string
 ): RouteWebhookResult => {
-  const workflow = ISSUE_LABEL_WORKFLOWS[labelName];
+  const workflow = ISSUE_LABEL_WORKFLOWS.get(labelName);
   if (!workflow) {
     return { kind: "ignore", reason: `unsupported_label:${labelName}` };
   }
@@ -98,19 +112,17 @@ const routeIssueEvent = (
   }
 
   const { issue, repository } = parsed.data;
+  if (issue.pull_request !== undefined) {
+    return { kind: "ignore", reason: "issue_is_pull_request" };
+  }
+
   return {
     kind: "dispatch",
     runInput: {
       workflow,
-      concurrencyKey: computeIssueConcurrencyKey(workflow, issue.number),
+      concurrencyKey: deriveConcurrencyKey(workflow, issue.number),
       deliveryId: input.deliveryId,
-      repository: {
-        owner: repository.owner.login,
-        name: repository.name,
-        fullName: repository.full_name,
-        cloneUrl: repository.clone_url,
-        defaultBranch: repository.default_branch,
-      },
+      repository: mapRepository(repository),
       subject: {
         kind: "issue",
         number: issue.number,
@@ -126,7 +138,7 @@ const routePullRequestEvent = (
   input: RouteWebhookInput,
   labelName: string
 ): RouteWebhookResult => {
-  const workflow = PR_LABEL_WORKFLOWS[labelName];
+  const workflow = PR_LABEL_WORKFLOWS.get(labelName);
   if (!workflow) {
     return { kind: "ignore", reason: `unsupported_label:${labelName}` };
   }
@@ -141,15 +153,9 @@ const routePullRequestEvent = (
     kind: "dispatch",
     runInput: {
       workflow,
-      concurrencyKey: `agent-review-pr-${pullRequest.number}`,
+      concurrencyKey: deriveConcurrencyKey(workflow, pullRequest.number),
       deliveryId: input.deliveryId,
-      repository: {
-        owner: repository.owner.login,
-        name: repository.name,
-        fullName: repository.full_name,
-        cloneUrl: repository.clone_url,
-        defaultBranch: repository.default_branch,
-      },
+      repository: mapRepository(repository),
       subject: {
         kind: "pull_request",
         number: pullRequest.number,
