@@ -41,3 +41,9 @@ stryker.log
 
 # Emails written locally instead of sent
 .outbox/
+
+# Software factory standalone workspace
+software-factory/node_modules/
+software-factory/dist/
+software-factory/.env
+software-factory/.data/
